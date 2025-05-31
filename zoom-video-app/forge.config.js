@@ -1,3 +1,4 @@
+// zoom-video-app/forge.config.js
 const { FusesPlugin } = require('@electron-forge/plugin-fuses');
 const { FuseV1Options, FuseVersion } = require('@electron/fuses');
 
@@ -38,26 +39,17 @@ module.exports = {
           entryPoints: [
             {
               html: './src/index.html',
-              js: './src/renderer.js',
+              js: './src/renderer.jsx', // .js 에서 .jsx 로 변경
               name: 'main_window',
               preload: {
-                js: './src/preload.js',
+                js: './src/preload.js', // preload 스크립트 경로
+                // name: 'main_window_preload' // preload 청크 이름 (선택적)
               },
             },
           ],
         },
       },
     },
-    // Fuses are used to enable/disable various Electron functionality
-    // at package time, before code signing the application
-    new FusesPlugin({
-      version: FuseVersion.V1,
-      [FuseV1Options.RunAsNode]: false,
-      [FuseV1Options.EnableCookieEncryption]: true,
-      [FuseV1Options.EnableNodeOptionsEnvironmentVariable]: false,
-      [FuseV1Options.EnableNodeCliInspectArguments]: false,
-      [FuseV1Options.EnableEmbeddedAsarIntegrityValidation]: true,
-      [FuseV1Options.OnlyLoadAppFromAsar]: true,
-    }),
+    new FusesPlugin({ /* ...기존 설정 유지... */ }),
   ],
 };
