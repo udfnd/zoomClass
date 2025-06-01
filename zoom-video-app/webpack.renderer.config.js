@@ -63,6 +63,7 @@ module.exports = {
     path: path.resolve(__dirname, '.webpack/renderer'),
     filename: 'renderer.js',
     globalObject: 'self', // HMR을 위해 'self', 'this' 또는 'window'로 시도
+    publicPath: './',
   },
   plugins: [
     new webpack.ProvidePlugin({

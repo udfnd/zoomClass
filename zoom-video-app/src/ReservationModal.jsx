@@ -1,25 +1,31 @@
 // src/ReservationModal.jsx
 import React, { useState } from 'react';
 
-function ReservationModal({ isOpen, onClose, store }) {
+function ReservationModal({ isOpen, onClose }) { // store prop 제거
     const [sessionName, setSessionName] = useState('');
     const [userName, setUserName] = useState(`ReservedUser-${Math.floor(Math.random() * 1000)}`);
-    const [date, setDate] = useState(new Date().toISOString().split('T')[0]); // YYYY-MM-DD
+    const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
     const [time, setTime] = useState('10:00');
 
     if (!isOpen) return null;
 
-    const handleSubmit = (e) => {
+    const handleSubmit = async (e) => { // async로 변경
         e.preventDefault();
         if (!sessionName.trim() || !date || !time) {
             alert('수업 이름, 날짜, 시간을 모두 입력해주세요.');
             return;
         }
         const newReservation = { sessionName, userName, date, time, id: Date.now() };
-        const existingReservations = store.get('reservations', []);
-        store.set('reservations', [...existingReservations, newReservation]);
-        alert('수업이 예약되었습니다.');
-        onClose();
+        try {
+            const existingReservations = await window.electronAPI.getStoreValue('reservations', []);
+            await window.electronAPI.setStoreValue('reservations', [...existingReservations, newReservation]);
+            alert('수업이 예약되었습니다.');
+            onClose(); // 성공 시 모달 닫기
+        } catch (error) {
+            console.error('Failed to save reservation:', error);
+            alert('예약 저장에 실패했습니다. 다시 시도해주세요.');
+            // 오류 처리 (예: 사용자에게 알림)
+        }
     };
 
     return (

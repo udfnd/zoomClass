@@ -1,10 +1,7 @@
 // src/LobbyScreen.jsx
-import React, { useState, useEffect } from 'react';
-import Store from 'electron-store';
+import React, { useState, useEffect, useCallback } from 'react';
 import ReservationModal from './ReservationModal';
-import CalendarView from './CalendarView'; // 간단한 버전으로 우선 구현
-
-const store = new Store(); // 예약 데이터 저장을 위해
+// import CalendarView from './CalendarView';
 
 function LobbyScreen({ onJoinMeeting }) {
     const [newSessionName, setNewSessionName] = useState('');
@@ -14,21 +11,27 @@ function LobbyScreen({ onJoinMeeting }) {
     const [reservations, setReservations] = useState([]);
     const [currentDate, setCurrentDate] = useState(new Date().toLocaleDateString('ko-KR'));
 
+    const loadReservations = useCallback(async () => {
+        try {
+            const savedReservations = await window.electronAPI.getStoreValue('reservations', []);
+            const today = new Date().toISOString().split('T')[0];
+            // 오늘 날짜의 예약만 필터링
+            const todayReservations = savedReservations.filter(res => res.date === today);
+            setReservations(todayReservations);
+        } catch (error) {
+            console.error('Failed to load reservations:', error);
+            // 사용자에게 오류 알림 등의 처리 추가 가능
+        }
+    }, []); // 의존성 배열이 비어있으므로 컴포넌트 마운트 시 한 번만 생성됨
+
     useEffect(() => {
         const intervalId = setInterval(() => {
             setCurrentDate(new Date().toLocaleDateString('ko-KR'));
-        }, 1000 * 60); // 1분마다 날짜 업데이트 (필요시 조정)
+        }, 1000 * 60); // 1분마다 날짜 업데이트
         loadReservations();
         return () => clearInterval(intervalId);
-    }, []);
+    }, [loadReservations]); // loadReservations가 변경될 때마다(실제로는 마운트 시 한 번) 실행
 
-    const loadReservations = () => {
-        const savedReservations = store.get('reservations', []);
-        // 오늘 날짜에 해당하는 예약만 필터링 (예시)
-        const today = new Date().toISOString().split('T')[0];
-        const todayReservations = savedReservations.filter(res => res.date === today);
-        setReservations(todayReservations);
-    };
 
     const handleCreateSession = () => {
         if (!newSessionName.trim()) {
@@ -52,7 +55,7 @@ function LobbyScreen({ onJoinMeeting }) {
 
     const handleCloseReservationModal = () => {
         setIsReservationModalOpen(false);
-        loadReservations(); // 모달 닫을 때 예약 목록 새로고침
+        loadReservations(); // 모달이 닫힐 때 예약 목록을 다시 로드
     };
 
     return (
@@ -91,7 +94,8 @@ function LobbyScreen({ onJoinMeeting }) {
                             placeholder="사용자 이름 (위와 동일)"
                             value={userName}
                             onChange={(e) => setUserName(e.target.value)}
-                            readOnly // 생성 시 입력한 사용자 이름을 그대로 사용하거나, 별도 입력 필드 제공
+                            // 생성 시 입력한 사용자 이름을 참여 시에도 사용하려면 readOnly 또는 다른 방식 고려
+                            // 현재는 동일한 userName 상태를 공유
                         />
                         <button onClick={handleJoinSession}>참여</button>
                     </div>
@@ -108,7 +112,7 @@ function LobbyScreen({ onJoinMeeting }) {
                         {reservations.length > 0 ? (
                             <ul>
                                 {reservations.map((res, index) => (
-                                    <li key={index}>
+                                    <li key={res.id || index}> {/* 고유한 id가 있다면 id 사용 */}
                                         {res.time} - {res.sessionName} ({res.userName})
                                         <button onClick={() => onJoinMeeting(res.sessionName, res.userName)} style={{marginLeft: '10px'}}>바로 참여</button>
                                     </li>
@@ -124,10 +128,12 @@ function LobbyScreen({ onJoinMeeting }) {
                 <ReservationModal
                     isOpen={isReservationModalOpen}
                     onClose={handleCloseReservationModal}
-                    store={store}
+                    // store prop 제거 (내부에서 window.electronAPI 사용)
                 />
             )}
-            {/* <CalendarView reservations={store.get('reservations', [])} /> */}
+            {/* <CalendarView reservations={await window.electronAPI.getStoreValue('reservations', [])} /> */}
+            {/* CalendarView를 직접 사용하려면, 비동기 데이터를 처리하도록 수정하거나 reservations 상태를 prop으로 전달해야 합니다. */}
+            {/* 현재 LobbyScreen에서 예약 목록을 직접 표시하므로 CalendarView는 주석 처리된 대로 유지합니다. */}
         </div>
     );
 }
