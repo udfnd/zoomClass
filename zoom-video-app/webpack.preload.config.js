@@ -3,10 +3,7 @@ const path = require('path');
 
 module.exports = {
     target: 'electron-preload',
-
-    // ▶ 프리로드 진입점 파일
     entry: path.resolve(__dirname, 'src/preload.js'),
-
     output: {
         filename: 'preload.js',
         path: path.resolve(__dirname, '.webpack/preload'),

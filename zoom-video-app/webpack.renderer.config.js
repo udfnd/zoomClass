@@ -6,8 +6,9 @@ require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 
 module.exports = {
   mode: process.env.NODE_ENV || 'development',
+  devtool: process.env.NODE_ENV === 'development' ? 'eval-source-map' : 'source-map',
   entry: './src/renderer.jsx',
-  target: 'electron-renderer',
+  target: 'web',
   module: {
     rules: [
       {
@@ -62,7 +63,7 @@ module.exports = {
   output: {
     path: path.resolve(__dirname, '.webpack/renderer'),
     filename: 'renderer.js',
-    globalObject: 'self', // HMR을 위해 'self', 'this' 또는 'window'로 시도
+    globalObject: 'window',
     publicPath: './',
   },
   plugins: [
@@ -72,8 +73,12 @@ module.exports = {
     }),
     new webpack.DefinePlugin({
       'process.env.ZOOM_SDK_KEY': JSON.stringify(process.env.ZOOM_SDK_KEY),
-      // 'process.env.ZOOM_SDK_SECRET': JSON.stringify(process.env.ZOOM_SDK_SECRET), // 렌더러에 불필요, 보안상 제거 권장
+      'process.env.ZOOM_SDK_SECRET': JSON.stringify(process.env.ZOOM_SDK_SECRET),
       'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV || 'development'),
     }),
+    new webpack.NormalModuleReplacementPlugin(
+        /^events$/, // 'events' 모듈을 정확히 일치시킴
+        require.resolve('events/') // 브라우저용 'events' 폴리필로 대체
+    ),
   ],
 };

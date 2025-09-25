@@ -1,9 +1,12 @@
+// src/renderer.jsx
 import React from 'react';
-import ReactDOM from 'react-dom/client';
-// import App from './App'; // App 임시 주석 처리
+import ReactDOM from 'react-dom/client'; // React 18의 새로운 Root API 사용
+import App from './App';
 import './index.css';
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(
-    <h1>Hello Electron React!</h1> // 간단한 요소로 변경
+    <React.StrictMode>
+        <App />
+    </React.StrictMode>
 );

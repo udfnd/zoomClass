@@ -1,4 +1,3 @@
-// src/LobbyScreen.jsx
 import React, { useState, useEffect, useCallback } from 'react';
 import ReservationModal from './ReservationModal';
 // import CalendarView from './CalendarView';
@@ -15,22 +14,20 @@ function LobbyScreen({ onJoinMeeting }) {
         try {
             const savedReservations = await window.electronAPI.getStoreValue('reservations', []);
             const today = new Date().toISOString().split('T')[0];
-            // 오늘 날짜의 예약만 필터링
             const todayReservations = savedReservations.filter(res => res.date === today);
             setReservations(todayReservations);
         } catch (error) {
             console.error('Failed to load reservations:', error);
-            // 사용자에게 오류 알림 등의 처리 추가 가능
         }
-    }, []); // 의존성 배열이 비어있으므로 컴포넌트 마운트 시 한 번만 생성됨
+    }, []);
 
     useEffect(() => {
         const intervalId = setInterval(() => {
             setCurrentDate(new Date().toLocaleDateString('ko-KR'));
-        }, 1000 * 60); // 1분마다 날짜 업데이트
+        }, 1000 * 60);
         loadReservations();
         return () => clearInterval(intervalId);
-    }, [loadReservations]); // loadReservations가 변경될 때마다(실제로는 마운트 시 한 번) 실행
+    }, [loadReservations]);
 
 
     const handleCreateSession = () => {
