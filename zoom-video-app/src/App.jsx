@@ -61,17 +61,24 @@ function App() {
 
     if (!APP_KEY) {
         return (
-            <div style={{ padding: '20px', textAlign: 'center', color: 'red', fontSize: '18px' }}>
-                <strong>에러:</strong> ZOOM_SDK_KEY가 설정되지 않았습니다. <code>.env</code> 파일을 확인하고 Webpack 설정을 점검해주세요.
+            <div className="app-status-card app-status-card--error">
+                <h2>환경 설정이 필요합니다</h2>
+                <p>
+                    <strong>ZOOM_SDK_KEY</strong>가 설정되지 않았습니다. <code>.env</code> 파일과 Webpack 설정을 다시 확인해 주세요.
+                </p>
             </div>
         );
     }
 
     if (!backendUrl) {
         return (
-            <div style={{ padding: '20px', textAlign: 'center', color: '#333', fontSize: '16px' }}>
-                백엔드 서버 URL을 불러오는 중입니다. <br />
-                환경 변수 <code>BACKEND_BASE_URL</code> 또는 <code>TOKEN_SERVER_URL</code>이 올바르게 설정되어 있는지 확인해주세요.
+            <div className="app-status-card">
+                <div className="loader" aria-hidden="true" />
+                <h2>백엔드 연결 확인 중</h2>
+                <p>
+                    환경 변수 <code>BACKEND_BASE_URL</code> 또는 <code>TOKEN_SERVER_URL</code>이 올바르게 설정되어 있는지 확인해
+                    주세요.
+                </p>
             </div>
         );
     }

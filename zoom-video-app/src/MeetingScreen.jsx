@@ -299,45 +299,55 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
 
     return (
         <div className="meeting-screen">
-            <div className="header">English Class - {sessionName} (사용자: {userName})</div>
-            <div className="video-container">
-                <video
-                    ref={videoRef}
-                    id="self-view-video"
-                    muted
-                    playsInline
-                    style={{ width: '320px', height: '240px', border: '1px solid #ccc', margin: '5px' }}
-                ></video>
-                {remoteUsers
-                    .filter((user) => user.userId !== client.current?.getCurrentUserInfo()?.userId)
-                    .map((user) => (
-                        <div key={user.userId} className="remote-video-container" style={{ margin: '5px' }}>
-                            <video
-                                id={`video-user-${user.userId}`}
-                                playsInline
-                                style={{ width: '240px', height: '180px', border: '1px solid #555', backgroundColor: '#222' }}
-                            ></video>
-                            <p style={{ color: 'white', textAlign: 'center', fontSize: '12px' }}>{user.displayName}</p>
+            <header className="meeting-header">
+                <div>
+                    <h1>{sessionName}</h1>
+                    <p>{userName}로 참여 중</p>
+                </div>
+                <div className="meeting-status">
+                    <span className="badge badge-live">LIVE</span>
+                    {activeShareUserName && <span className="badge badge-share">화면 공유: {activeShareUserName}</span>}
+                </div>
+            </header>
+            <div className="meeting-content">
+                <section className="video-section">
+                    <h2 className="section-title">참가자 비디오</h2>
+                    <div className="video-grid">
+                        <div className="video-tile video-tile--local">
+                            <video ref={videoRef} id="self-view-video" muted playsInline />
+                            <span className="nameplate">나 ({userName})</span>
                         </div>
-                    ))}
+                        {remoteUsers
+                            .filter((user) => user.userId !== client.current?.getCurrentUserInfo()?.userId)
+                            .map((user) => (
+                                <div key={user.userId} className="video-tile">
+                                    <video id={`video-user-${user.userId}`} playsInline />
+                                    <span className="nameplate">{user.displayName}</span>
+                                </div>
+                            ))}
+                    </div>
+                </section>
+                <section className="share-section">
+                    <div className="share-canvas-wrapper">
+                        <canvas ref={shareCanvasRef} id="share-canvas" width={960} height={540} />
+                    </div>
+                    <p className="share-status-text">
+                        {activeShareUserName ? `화면 공유 중: ${activeShareUserName}` : '현재 화면 공유가 없습니다.'}
+                    </p>
+                </section>
             </div>
-            <div className="share-container">
-                <canvas
-                    ref={shareCanvasRef}
-                    id="share-canvas"
-                    width={960}
-                    height={540}
-                    style={{ width: '100%', maxWidth: '960px', height: 'auto', border: '1px solid #222', backgroundColor: '#111' }}
-                ></canvas>
-                <p className="share-status-text">
-                    {activeShareUserName ? `화면 공유 중: ${activeShareUserName}` : '현재 화면 공유가 없습니다.'}
-                </p>
-            </div>
-            <div className="controls">
-                <button onClick={toggleScreenShare} disabled={!isJoined || !currentStream}>
+            <div className="control-bar">
+                <button
+                    className="btn btn-primary"
+                    onClick={toggleScreenShare}
+                    disabled={!isJoined || !currentStream}
+                    aria-pressed={isSharing}
+                >
                     {isSharing ? '화면 공유 중지' : '화면 공유 시작'}
                 </button>
-                <button onClick={leaveCurrentSession} disabled={!isJoined}>회의 종료</button>
+                <button className="btn btn-danger" onClick={leaveCurrentSession} disabled={!isJoined}>
+                    회의 종료
+                </button>
             </div>
         </div>
     );
