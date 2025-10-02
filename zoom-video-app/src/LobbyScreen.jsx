@@ -15,7 +15,7 @@ function LobbyScreen({ backendUrl, onJoinMeeting }) {
 
     const backendLabel = useMemo(() => {
         if (!backendUrl) return '구성 필요';
-        return backendUrl.replace(/^https?:\/\//, '').replace(/\/$/, '');
+        return backendUrl.replace(/^https?:\/\//, '').replace(/\/+$, '');
     }, [backendUrl]);
 
     const fetchMeetings = useCallback(async (endpoint) => {
@@ -23,7 +23,7 @@ function LobbyScreen({ backendUrl, onJoinMeeting }) {
             throw new Error('Backend URL is not configured.');
         }
 
-        const sanitizedBase = backendUrl.replace(/\/$/, '');
+        const sanitizedBase = backendUrl.replace(/\/+$, '');
         const normalizedEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
         const response = await fetch(`${sanitizedBase}${normalizedEndpoint}`);
         if (!response.ok) {
@@ -94,7 +94,8 @@ function LobbyScreen({ backendUrl, onJoinMeeting }) {
         const startTime = new Date().toISOString();
 
         try {
-            const response = await fetch(`${backendUrl}/meetings`, {
+            const sanitizedBase = backendUrl.replace(/\/+$, '');
+            const response = await fetch(`${sanitizedBase}/meetings`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({

@@ -57,7 +57,7 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
 
         console.log(`Joining session: ${sessionName} as ${userName}`);
         try {
-            const sanitizedBase = backendUrl.replace(/\/$/, '');
+            const sanitizedBase = backendUrl.replace(/\/+$, '');
             const queryParams = new URLSearchParams({
                 sessionName: sessionName,
                 userId: userName,
