@@ -1,41 +1,116 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import ReservationModal from './ReservationModal';
-// import CalendarView from './CalendarView';
+import CalendarView from './CalendarView';
 
-function LobbyScreen({ onJoinMeeting }) {
+function LobbyScreen({ backendUrl, onJoinMeeting }) {
     const [newSessionName, setNewSessionName] = useState('');
     const [joinSessionName, setJoinSessionName] = useState('');
     const [userName, setUserName] = useState(`User-${Math.floor(Math.random() * 10000)}`);
     const [isReservationModalOpen, setIsReservationModalOpen] = useState(false);
     const [reservations, setReservations] = useState([]);
+    const [upcomingReservations, setUpcomingReservations] = useState([]);
+    const [isLoadingReservations, setIsLoadingReservations] = useState(false);
+    const [reservationError, setReservationError] = useState('');
     const [currentDate, setCurrentDate] = useState(new Date().toLocaleDateString('ko-KR'));
 
+    const fetchMeetings = useCallback(async (endpoint) => {
+        if (!backendUrl) {
+            throw new Error('Backend URL is not configured.');
+        }
+
+        const sanitizedBase = backendUrl.replace(/\/$/, '');
+        const normalizedEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+        const response = await fetch(`${sanitizedBase}${normalizedEndpoint}`);
+        if (!response.ok) {
+            const bodyText = await response.text();
+            throw new Error(bodyText || response.statusText);
+        }
+        const data = await response.json();
+        return (data.meetings || []).map((meeting) => ({
+            id: meeting.id,
+            sessionName: meeting.session_name,
+            userName: meeting.host_name,
+            startTime: meeting.start_time,
+        }));
+    }, [backendUrl]);
+
     const loadReservations = useCallback(async () => {
+        if (!backendUrl) {
+            return;
+        }
+        setIsLoadingReservations(true);
         try {
-            const savedReservations = await window.electronAPI.getStoreValue('reservations', []);
             const today = new Date().toISOString().split('T')[0];
-            const todayReservations = savedReservations.filter(res => res.date === today);
-            setReservations(todayReservations);
+            const todays = await fetchMeetings(`/meetings?date=${today}`);
+            setReservations(todays);
+            setReservationError('');
         } catch (error) {
             console.error('Failed to load reservations:', error);
+            setReservationError('오늘 예약된 수업을 불러오지 못했습니다.');
+            setReservations([]);
         }
-    }, []);
+        setIsLoadingReservations(false);
+    }, [backendUrl, fetchMeetings]);
+
+    const loadUpcomingReservations = useCallback(async () => {
+        if (!backendUrl) {
+            return;
+        }
+        try {
+            const upcoming = await fetchMeetings('/meetings?range=upcoming');
+            setUpcomingReservations(upcoming);
+        } catch (error) {
+            console.error('Failed to load upcoming reservations:', error);
+            setUpcomingReservations([]);
+        }
+    }, [backendUrl, fetchMeetings]);
 
     useEffect(() => {
         const intervalId = setInterval(() => {
             setCurrentDate(new Date().toLocaleDateString('ko-KR'));
         }, 1000 * 60);
         loadReservations();
+        loadUpcomingReservations();
         return () => clearInterval(intervalId);
-    }, [loadReservations]);
+    }, [loadReservations, loadUpcomingReservations]);
 
-
-    const handleCreateSession = () => {
+    const handleCreateSession = async () => {
         if (!newSessionName.trim()) {
             alert('새로운 수업 이름을 입력해주세요.');
             return;
         }
-        onJoinMeeting(newSessionName.trim(), userName.trim() || `User-${Math.floor(Math.random() * 10000)}`);
+        if (!backendUrl) {
+            alert('백엔드 URL이 구성되지 않았습니다. 환경 변수를 확인해주세요.');
+            return;
+        }
+
+        const trimmedSession = newSessionName.trim();
+        const resolvedUser = userName.trim() || `User-${Math.floor(Math.random() * 10000)}`;
+        const startTime = new Date().toISOString();
+
+        try {
+            const response = await fetch(`${backendUrl}/meetings`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    sessionName: trimmedSession,
+                    hostName: resolvedUser,
+                    startTime,
+                }),
+            });
+
+            if (!response.ok) {
+                const errorBody = await response.json().catch(() => ({}));
+                throw new Error(errorBody.error || errorBody.message || response.statusText);
+            }
+
+            await loadReservations();
+            await loadUpcomingReservations();
+            onJoinMeeting(trimmedSession, resolvedUser);
+        } catch (error) {
+            console.error('Failed to create meeting:', error);
+            alert(`수업 생성에 실패했습니다: ${error.message}`);
+        }
     };
 
     const handleJoinSession = () => {
@@ -52,7 +127,18 @@ function LobbyScreen({ onJoinMeeting }) {
 
     const handleCloseReservationModal = () => {
         setIsReservationModalOpen(false);
-        loadReservations(); // 모달이 닫힐 때 예약 목록을 다시 로드
+    };
+
+    const renderReservationTime = (isoString) => {
+        if (!isoString) return '시간 미정';
+        const date = new Date(isoString);
+        if (Number.isNaN(date.getTime())) {
+            return '시간 미정';
+        }
+        return `${date.toLocaleDateString('ko-KR')} ${date.toLocaleTimeString('ko-KR', {
+            hour: '2-digit',
+            minute: '2-digit',
+        })}`;
     };
 
     return (
@@ -91,8 +177,6 @@ function LobbyScreen({ onJoinMeeting }) {
                             placeholder="사용자 이름 (위와 동일)"
                             value={userName}
                             onChange={(e) => setUserName(e.target.value)}
-                            // 생성 시 입력한 사용자 이름을 참여 시에도 사용하려면 readOnly 또는 다른 방식 고려
-                            // 현재는 동일한 userName 상태를 공유
                         />
                         <button onClick={handleJoinSession}>참여</button>
                     </div>
@@ -106,15 +190,24 @@ function LobbyScreen({ onJoinMeeting }) {
                     </div>
                     <div className="todays-reservations">
                         <h3>오늘 예약된 수업</h3>
-                        {reservations.length > 0 ? (
+                        {isLoadingReservations ? (
+                            <p>불러오는 중...</p>
+                        ) : reservations.length > 0 ? (
                             <ul>
-                                {reservations.map((res, index) => (
-                                    <li key={res.id || index}> {/* 고유한 id가 있다면 id 사용 */}
-                                        {res.time} - {res.sessionName} ({res.userName})
-                                        <button onClick={() => onJoinMeeting(res.sessionName, res.userName)} style={{marginLeft: '10px'}}>바로 참여</button>
+                                {reservations.map((res) => (
+                                    <li key={res.id || `${res.sessionName}-${res.startTime}`}>
+                                        {renderReservationTime(res.startTime)} - {res.sessionName} ({res.userName})
+                                        <button
+                                            onClick={() => onJoinMeeting(res.sessionName, res.userName)}
+                                            style={{ marginLeft: '10px' }}
+                                        >
+                                            바로 참여
+                                        </button>
                                     </li>
                                 ))}
                             </ul>
+                        ) : reservationError ? (
+                            <p>{reservationError}</p>
                         ) : (
                             <p>오늘 예약된 수업이 없습니다.</p>
                         )}
@@ -124,13 +217,17 @@ function LobbyScreen({ onJoinMeeting }) {
             {isReservationModalOpen && (
                 <ReservationModal
                     isOpen={isReservationModalOpen}
+                    backendUrl={backendUrl}
                     onClose={handleCloseReservationModal}
-                    // store prop 제거 (내부에서 window.electronAPI 사용)
+                    onReservationCreated={() => {
+                        loadReservations();
+                        loadUpcomingReservations();
+                    }}
                 />
             )}
-            {/* <CalendarView reservations={await window.electronAPI.getStoreValue('reservations', [])} /> */}
-            {/* CalendarView를 직접 사용하려면, 비동기 데이터를 처리하도록 수정하거나 reservations 상태를 prop으로 전달해야 합니다. */}
-            {/* 현재 LobbyScreen에서 예약 목록을 직접 표시하므로 CalendarView는 주석 처리된 대로 유지합니다. */}
+            <div style={{ padding: '0 20px 20px' }}>
+                <CalendarView reservations={upcomingReservations} />
+            </div>
         </div>
     );
 }

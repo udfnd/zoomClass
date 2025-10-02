@@ -74,6 +74,7 @@ module.exports = {
     new webpack.DefinePlugin({
       'process.env.ZOOM_SDK_KEY': JSON.stringify(process.env.ZOOM_SDK_KEY),
       'process.env.ZOOM_SDK_SECRET': JSON.stringify(process.env.ZOOM_SDK_SECRET),
+      'process.env.BACKEND_BASE_URL': JSON.stringify(process.env.BACKEND_BASE_URL || process.env.TOKEN_SERVER_URL || ''),
       'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV || 'development'),
     }),
     new webpack.NormalModuleReplacementPlugin(
