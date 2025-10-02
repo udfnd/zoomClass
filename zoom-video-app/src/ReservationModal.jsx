@@ -66,10 +66,13 @@ function ReservationModal({ backendUrl, isOpen, onClose, onReservationCreated })
     return (
         <div className="modal-overlay">
             <div className="modal-content">
-                <h2>수업 예약</h2>
-                <form onSubmit={handleSubmit}>
-                    <div>
-                        <label htmlFor="res-session-name">수업 이름:</label>
+                <div className="modal-header">
+                    <h2>수업 예약</h2>
+                    <p>정확한 수업 이름과 시간을 설정하면 대기실에서 자동으로 표시됩니다.</p>
+                </div>
+                <form onSubmit={handleSubmit} className="modal-form">
+                    <div className="modal-field">
+                        <label htmlFor="res-session-name">수업 이름</label>
                         <input
                             id="res-session-name"
                             type="text"
@@ -78,8 +81,8 @@ function ReservationModal({ backendUrl, isOpen, onClose, onReservationCreated })
                             required
                         />
                     </div>
-                    <div>
-                        <label htmlFor="res-user-name">사용자 이름:</label>
+                    <div className="modal-field">
+                        <label htmlFor="res-user-name">진행자 이름</label>
                         <input
                             id="res-user-name"
                             type="text"
@@ -88,31 +91,33 @@ function ReservationModal({ backendUrl, isOpen, onClose, onReservationCreated })
                             required
                         />
                     </div>
-                    <div>
-                        <label htmlFor="res-date">날짜:</label>
-                        <input
-                            id="res-date"
-                            type="date"
-                            value={date}
-                            onChange={(e) => setDate(e.target.value)}
-                            required
-                        />
-                    </div>
-                    <div>
-                        <label htmlFor="res-time">시간:</label>
-                        <input
-                            id="res-time"
-                            type="time"
-                            value={time}
-                            onChange={(e) => setTime(e.target.value)}
-                            required
-                        />
+                    <div className="modal-row">
+                        <div className="modal-field">
+                            <label htmlFor="res-date">날짜</label>
+                            <input
+                                id="res-date"
+                                type="date"
+                                value={date}
+                                onChange={(e) => setDate(e.target.value)}
+                                required
+                            />
+                        </div>
+                        <div className="modal-field">
+                            <label htmlFor="res-time">시간</label>
+                            <input
+                                id="res-time"
+                                type="time"
+                                value={time}
+                                onChange={(e) => setTime(e.target.value)}
+                                required
+                            />
+                        </div>
                     </div>
                     <div className="modal-actions">
-                        <button type="submit" disabled={isSubmitting}>
+                        <button className="btn btn-primary" type="submit" disabled={isSubmitting}>
                             {isSubmitting ? '예약 중...' : '예약하기'}
                         </button>
-                        <button type="button" onClick={onClose} disabled={isSubmitting}>
+                        <button className="btn btn-ghost" type="button" onClick={onClose} disabled={isSubmitting}>
                             닫기
                         </button>
                     </div>
