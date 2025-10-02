@@ -51,12 +51,20 @@ app.on('window-all-closed', () => {
   }
 });
 
-ipcMain.handle('get-token-url', async () => {
-  if (!process.env.TOKEN_SERVER_URL) { //
-    console.error('TOKEN_SERVER_URL is not defined in .env file');
-    return null;
+const resolveBackendUrl = () => {
+  const base = process.env.BACKEND_BASE_URL || process.env.TOKEN_SERVER_URL || 'http://localhost:4000';
+  if (!base) {
+    console.error('No backend URL is configured. Set BACKEND_BASE_URL or TOKEN_SERVER_URL.');
   }
-  return process.env.TOKEN_SERVER_URL;
+  return base;
+};
+
+ipcMain.handle('get-token-url', async () => {
+  return resolveBackendUrl();
+});
+
+ipcMain.handle('get-backend-url', async () => {
+  return resolveBackendUrl();
 });
 
 // electron-store IPC 핸들러 (store 변수가 유효할 때만 작동하도록 방어 코드 추가)

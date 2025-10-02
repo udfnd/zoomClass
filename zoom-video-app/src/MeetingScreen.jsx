@@ -1,16 +1,18 @@
-// src/MeetingScreen.jsx
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import ZoomVideo from '@zoom/videosdk';
 
 const APP_KEY = process.env.ZOOM_SDK_KEY;
 
-function MeetingScreen({ sessionName, userName, onLeaveMeeting }) {
+function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
     const videoRef = useRef(null);
+    const shareCanvasRef = useRef(null);
     const client = useRef(null);
     const [isClientInited, setIsClientInited] = useState(false);
     const [isJoined, setIsJoined] = useState(false);
     const [currentStream, setCurrentStream] = useState(null);
     const [remoteUsers, setRemoteUsers] = useState([]);
+    const [isSharing, setIsSharing] = useState(false);
+    const [activeShareUserId, setActiveShareUserId] = useState(null);
 
     const initClient = useCallback(async () => {
         if (!APP_KEY) {
@@ -20,9 +22,8 @@ function MeetingScreen({ sessionName, userName, onLeaveMeeting }) {
             return;
         }
 
-        if (client.current) { // 이미 초기화된 경우 중복 실행 방지
+        if (client.current) {
             console.log('Zoom SDK already initialized or in progress.');
-            // setIsClientInited(true); // 이미 true일 수 있음
             return;
         }
 
@@ -44,36 +45,32 @@ function MeetingScreen({ sessionName, userName, onLeaveMeeting }) {
             console.log('Client not initialized yet or initialization failed.');
             return;
         }
-        if (isJoined) { // 이미 참여한 경우 중복 실행 방지
+        if (isJoined) {
             console.log('Already joined the session.');
+            return;
+        }
+        if (!backendUrl) {
+            alert('토큰 서버 주소를 찾을 수 없습니다. BACKEND_BASE_URL 구성을 확인해주세요.');
+            onLeaveMeeting();
             return;
         }
 
         console.log(`Joining session: ${sessionName} as ${userName}`);
         try {
-            const tokenBaseUrl = await window.electronAPI.getTokenUrl();
-            if (!tokenBaseUrl) {
-                throw new Error('Token server URL is not configured.');
-            }
-
+            const sanitizedBase = backendUrl.replace(/\/$/, '');
             const queryParams = new URLSearchParams({
                 sessionName: sessionName,
                 userId: userName,
-                // role: 1 // token-server.js는 role을 query로 받지 않고, JWT 생성 시 고정값으로 사용합니다.
             }).toString();
 
-            const tokenEndpoint = `${tokenBaseUrl}/generate-token?${queryParams}`; // 경로와 쿼리 파라미터 조합
-
-            const response = await fetch(tokenEndpoint, { // GET 요청
-                method: 'GET',
-            });
+            const tokenEndpoint = `${sanitizedBase}/generate-token?${queryParams}`;
+            const response = await fetch(tokenEndpoint, { method: 'GET' });
 
             if (!response.ok) {
                 let errorData;
                 try {
                     errorData = await response.json();
                 } catch (e) {
-                    // 응답이 JSON이 아닐 경우를 대비
                     errorData = { message: await response.text() || response.statusText };
                 }
                 throw new Error(`Failed to get token: ${errorData.message || response.statusText} (Status: ${response.status})`);
@@ -98,26 +95,18 @@ function MeetingScreen({ sessionName, userName, onLeaveMeeting }) {
                 await stream.startAudio();
                 console.log('Local audio started (audio only).');
             } else {
-                // 비디오 스트림은 있지만 videoRef가 없는 경우 (이론적으로 발생하기 어려움)
-                console.warn("Video stream is available but no video element to render to. Starting audio only.");
+                console.warn('Video stream is available but no video element to render to. Starting audio only.');
                 await stream.startAudio();
             }
-
         } catch (error) {
             console.error('Error joining session:', error);
             alert(`세션 참여에 실패했습니다: ${error.message}`);
             onLeaveMeeting();
         }
-    }, [client, isClientInited, isJoined, sessionName, userName, onLeaveMeeting]);
+    }, [backendUrl, client, isClientInited, isJoined, sessionName, userName, onLeaveMeeting]);
 
     useEffect(() => {
         initClient();
-        // 컴포넌트 언마운트 시 클라이언트 정리 (필요한 경우, 현재는 leaveCurrentSession에서 처리)
-        // return () => {
-        //     if (client.current && client.current.isInitialized()) {
-        //         // client.current.destroy(); // Video SDK에 destroy 메소드가 있는지 확인 필요
-        //     }
-        // };
     }, [initClient]);
 
     useEffect(() => {
@@ -126,94 +115,165 @@ function MeetingScreen({ sessionName, userName, onLeaveMeeting }) {
         }
     }, [isClientInited, sessionName, userName, isJoined, joinSession]);
 
+    const cleanupShare = useCallback(async () => {
+        if (!currentStream) {
+            return;
+        }
+        if (typeof currentStream.stopShareScreen === 'function') {
+            try {
+                await currentStream.stopShareScreen();
+            } catch (error) {
+                console.warn('Failed to stop local share screen:', error);
+            }
+        }
+        if (typeof currentStream.stopShareView === 'function') {
+            try {
+                await currentStream.stopShareView();
+            } catch (error) {
+                console.warn('Failed to stop share view:', error);
+            }
+        }
+        setIsSharing(false);
+        setActiveShareUserId(null);
+    }, [currentStream]);
 
     const leaveCurrentSession = useCallback(async () => {
         if (client.current && isJoined) {
             try {
                 console.log('Attempting to leave session...');
                 if (currentStream) {
-                    if (currentStream.isCapturingVideo()) {
-                        await currentStream.stopVideo().catch(e => console.error("Error stopping video:", e));
+                    await cleanupShare();
+                    if (typeof currentStream.isCapturingVideo === 'function' && currentStream.isCapturingVideo()) {
+                        await currentStream.stopVideo().catch((e) => console.error('Error stopping video:', e));
                         console.log('Local video stopped.');
                     }
-                    if (currentStream.isCapturingAudio()) {
-                        await currentStream.stopAudio().catch(e => console.error("Error stopping audio:", e));
+                    if (typeof currentStream.isCapturingAudio === 'function' && currentStream.isCapturingAudio()) {
+                        await currentStream.stopAudio().catch((e) => console.error('Error stopping audio:', e));
                         console.log('Local audio stopped.');
                     }
                 }
-                await client.current.leave(true); // true: end meeting for all if host, false: leave as participant
+                await client.current.leave(true);
                 console.log('Left session successfully.');
             } catch (error) {
                 console.error('Error leaving session:', error);
             }
         }
-        // 상태 초기화는 onLeaveMeeting 콜백 이후 또는 여기서 수행
         setIsJoined(false);
         setCurrentStream(null);
         setRemoteUsers([]);
-        // setIsClientInited(false); // SDK를 재사용할 수 있으므로 false로 설정하지 않을 수 있음
-        // client.current = null; // SDK 인스턴스 정리 (필요시)
+        setIsSharing(false);
+        setActiveShareUserId(null);
 
         if (onLeaveMeeting) {
             onLeaveMeeting();
         }
-    }, [client, isJoined, currentStream, onLeaveMeeting]);
+    }, [client, isJoined, currentStream, cleanupShare, onLeaveMeeting]);
 
+    const toggleScreenShare = useCallback(async () => {
+        if (!currentStream || !shareCanvasRef.current) {
+            alert('화면 공유를 시작할 수 없습니다. 잠시 후 다시 시도해주세요.');
+            return;
+        }
+
+        try {
+            const currentUserId = client.current?.getCurrentUserInfo()?.userId ?? null;
+            if (!isSharing) {
+                await currentStream.startShareScreen(shareCanvasRef.current);
+                setIsSharing(true);
+                setActiveShareUserId(currentUserId);
+            } else {
+                if (typeof currentStream.stopShareScreen === 'function') {
+                    await currentStream.stopShareScreen();
+                }
+                setIsSharing(false);
+                if (activeShareUserId === currentUserId) {
+                    setActiveShareUserId(null);
+                }
+            }
+        } catch (error) {
+            console.error('Failed to toggle screen share:', error);
+            alert(`화면 공유 중 오류가 발생했습니다: ${error.message}`);
+        }
+    }, [currentStream, isSharing, activeShareUserId]);
 
     useEffect(() => {
         if (!client.current || !isJoined) return;
 
         const participantList = client.current.getAllUser();
-        setRemoteUsers(participantList); // 초기 참여자 목록 설정
+        setRemoteUsers(participantList);
         console.log('Initial remote users:', participantList);
 
-        const handleUserJoined = (payload) => {
-            console.log('user-joined event:', payload);
+        const handleUserJoined = () => {
             setRemoteUsers(client.current.getAllUser());
         };
-        const handleUserLeft = (payload) => {
-            console.log('user-left event:', payload);
+        const handleUserLeft = () => {
             setRemoteUsers(client.current.getAllUser());
         };
-        const handleStreamAdded = async (stream) => { // stream-added 이벤트는 Zoom Video SDK에서 원격 사용자의 스트림에 대한 것
-            console.log('Stream added:', stream);
+        const handleStreamAdded = async (stream) => {
+            if (!stream) return;
             const remoteUserId = stream.userId;
-            const remoteVideoElement = document.getElementById(`video-user-${remoteUserId}`); // 동적으로 생성된 비디오 요소
+            const remoteVideoElement = document.getElementById(`video-user-${remoteUserId}`);
 
-            if (remoteVideoElement) {
-                if (!stream.isAudioOnly()) {
+            try {
+                if (remoteVideoElement && typeof stream.startVideo === 'function' && !stream.isAudioOnly()) {
                     await stream.startVideo({ videoElement: remoteVideoElement });
-                    console.log(`Started video for remote user ${remoteUserId}`);
-                } else {
-                    await stream.startAudio();
-                    console.log(`Started audio for remote user ${remoteUserId} (audio only)`);
-                }
-            } else {
-                console.warn(`Video element for user ${remoteUserId} not found.`);
-                // 오디오만이라도 시작 시도
-                if (stream.isAudioOnly() || !stream.isCapturingVideo()) {
+                } else if (typeof stream.startAudio === 'function') {
                     await stream.startAudio();
                 }
+            } catch (error) {
+                console.error('Failed to render remote stream:', error);
             }
         };
         const handleStreamRemoved = (stream) => {
             console.log('Stream removed:', stream);
-            // 해당 스트림을 사용하던 비디오 요소 정리 로직이 필요할 수 있음
-            // 예: stream.stopVideo(), stream.stopAudio() 등. SDK가 자동으로 처리할 수도 있음.
-        };
-        const handlePeerVideoStateChanged = (payload) => {
-            console.log('peer-video-state-changed:', payload);
-            // payload: {action: 'Start' | 'Stop', userId: number}
-            // 필요에 따라 원격 사용자 비디오 렌더링을 여기서도 관리할 수 있음
         };
 
+        const handleShareState = async (payload) => {
+            if (!currentStream) return;
+            const eventState = payload?.state || payload?.action;
+            const userId = payload?.userId ?? payload?.userID ?? payload?.user?.userId ?? null;
+
+            if (!eventState) {
+                return;
+            }
+
+            if (eventState === 'Start') {
+                setActiveShareUserId(userId);
+                if (userId === client.current?.getCurrentUserInfo()?.userId) {
+                    setIsSharing(true);
+                    return;
+                }
+                if (shareCanvasRef.current && typeof currentStream.startShareView === 'function') {
+                    try {
+                        await currentStream.startShareView({
+                            userId,
+                            shareCanvas: shareCanvasRef.current,
+                        });
+                    } catch (error) {
+                        console.error('Failed to start share view:', error);
+                    }
+                }
+            } else if (eventState === 'Stop') {
+                if (userId === client.current?.getCurrentUserInfo()?.userId) {
+                    setIsSharing(false);
+                }
+                setActiveShareUserId((prev) => (prev === userId ? null : prev));
+                if (typeof currentStream.stopShareView === 'function') {
+                    try {
+                        await currentStream.stopShareView();
+                    } catch (error) {
+                        console.error('Failed to stop share view:', error);
+                    }
+                }
+            }
+        };
 
         client.current.on('user-joined', handleUserJoined);
         client.current.on('user-left', handleUserLeft);
-        client.current.on('stream-added', handleStreamAdded); // 원격 사용자 스트림 추가
-        client.current.on('stream-removed', handleStreamRemoved); // 원격 사용자 스트림 제거
-        client.current.on('peer-video-state-changed', handlePeerVideoStateChanged);
-
+        client.current.on('stream-added', handleStreamAdded);
+        client.current.on('stream-removed', handleStreamRemoved);
+        client.current.on('peer-share-state-change', handleShareState);
+        client.current.on('active-share-change', handleShareState);
 
         return () => {
             if (client.current) {
@@ -221,27 +281,63 @@ function MeetingScreen({ sessionName, userName, onLeaveMeeting }) {
                 client.current.off('user-left', handleUserLeft);
                 client.current.off('stream-added', handleStreamAdded);
                 client.current.off('stream-removed', handleStreamRemoved);
-                client.current.off('peer-video-state-changed', handlePeerVideoStateChanged);
-
+                client.current.off('peer-share-state-change', handleShareState);
+                client.current.off('active-share-change', handleShareState);
             }
         };
-    }, [client, isJoined]);
+    }, [client, currentStream, isJoined]);
 
+    const activeShareUserName = (() => {
+        if (!activeShareUserId) return null;
+        const currentUserId = client.current?.getCurrentUserInfo()?.userId;
+        if (activeShareUserId === currentUserId) {
+            return userName;
+        }
+        const remoteUser = remoteUsers.find((user) => user.userId === activeShareUserId);
+        return remoteUser?.displayName || `사용자 ${activeShareUserId}`;
+    })();
 
     return (
         <div className="meeting-screen">
             <div className="header">English Class - {sessionName} (사용자: {userName})</div>
             <div className="video-container">
-                <video ref={videoRef} id="self-view-video" muted playsInline style={{ width: '320px', height: '240px', border: '1px solid #ccc', margin: '5px' }}></video>
-                {remoteUsers.filter(user => user.userId !== client.current?.getCurrentUserInfo()?.userId).map(user => (
-                    <div key={user.userId} className="remote-video-container" style={{margin: '5px'}}>
-                        <video id={`video-user-${user.userId}`} playsInline style={{ width: '240px', height: '180px', border: '1px solid #555', backgroundColor: '#222' }}></video>
-                        <p style={{color: 'white', textAlign: 'center', fontSize: '12px'}}>{user.displayName}</p>
-                    </div>
-                ))}
+                <video
+                    ref={videoRef}
+                    id="self-view-video"
+                    muted
+                    playsInline
+                    style={{ width: '320px', height: '240px', border: '1px solid #ccc', margin: '5px' }}
+                ></video>
+                {remoteUsers
+                    .filter((user) => user.userId !== client.current?.getCurrentUserInfo()?.userId)
+                    .map((user) => (
+                        <div key={user.userId} className="remote-video-container" style={{ margin: '5px' }}>
+                            <video
+                                id={`video-user-${user.userId}`}
+                                playsInline
+                                style={{ width: '240px', height: '180px', border: '1px solid #555', backgroundColor: '#222' }}
+                            ></video>
+                            <p style={{ color: 'white', textAlign: 'center', fontSize: '12px' }}>{user.displayName}</p>
+                        </div>
+                    ))}
+            </div>
+            <div className="share-container">
+                <canvas
+                    ref={shareCanvasRef}
+                    id="share-canvas"
+                    width={960}
+                    height={540}
+                    style={{ width: '100%', maxWidth: '960px', height: 'auto', border: '1px solid #222', backgroundColor: '#111' }}
+                ></canvas>
+                <p className="share-status-text">
+                    {activeShareUserName ? `화면 공유 중: ${activeShareUserName}` : '현재 화면 공유가 없습니다.'}
+                </p>
             </div>
             <div className="controls">
-                <button onClick={leaveCurrentSession} disabled={!isJoined}>Leave</button>
+                <button onClick={toggleScreenShare} disabled={!isJoined || !currentStream}>
+                    {isSharing ? '화면 공유 중지' : '화면 공유 시작'}
+                </button>
+                <button onClick={leaveCurrentSession} disabled={!isJoined}>회의 종료</button>
             </div>
         </div>
     );

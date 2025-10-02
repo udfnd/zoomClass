@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer, shell } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
     getTokenUrl: () => ipcRenderer.invoke('get-token-url'),
+    getBackendUrl: () => ipcRenderer.invoke('get-backend-url'),
     openExternal: (url) => shell.openExternal(url),
 
     getStoreValue: (key, defaultValue) => ipcRenderer.invoke('electron-store-get', key, defaultValue),
