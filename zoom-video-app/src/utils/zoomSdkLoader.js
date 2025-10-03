@@ -1,19 +1,16 @@
 const SDK_VERSION = '3.10.1';
+const SDK_CDN_BASE = 'https://source.zoom.us/sdk';
+
+export const ZOOM_SDK_VERSION = SDK_VERSION;
+export const ZOOM_SDK_CDN_BASE = SDK_CDN_BASE;
 
 const SCRIPT_SOURCES = [
-    `https://source.zoom.us/${SDK_VERSION}/lib/vendor/react.min.js`,
-    `https://source.zoom.us/${SDK_VERSION}/lib/vendor/react-dom.min.js`,
-    `https://source.zoom.us/${SDK_VERSION}/lib/vendor/redux.min.js`,
-    `https://source.zoom.us/${SDK_VERSION}/lib/vendor/redux-thunk.min.js`,
-    `https://source.zoom.us/${SDK_VERSION}/lib/vendor/lodash.min.js`,
-    `https://source.zoom.us/${SDK_VERSION}/lib/av/av.min.js`,
-    `https://source.zoom.us/${SDK_VERSION}/lib/zoom-meeting-embedded-${SDK_VERSION}.min.js`,
+    `${SDK_CDN_BASE}/zoom-meeting-embedded-${SDK_VERSION}.min.js`,
 ];
 
 const CSS_SOURCES = [
-    `https://source.zoom.us/${SDK_VERSION}/css/bootstrap.css`,
-    `https://source.zoom.us/${SDK_VERSION}/css/react-select.css`,
-    `https://source.zoom.us/${SDK_VERSION}/css/zoom-meeting-embedded.css`,
+    `${SDK_CDN_BASE}/index.css`,
+    `${SDK_CDN_BASE}/embedded/index.css`,
 ];
 
 let loadingPromise = null;
@@ -31,6 +28,7 @@ function appendStylesheet(href) {
     link.rel = 'stylesheet';
     link.href = href;
     link.dataset.zoomSdk = href;
+    link.crossOrigin = 'anonymous';
     document.head.appendChild(link);
 }
 
@@ -55,6 +53,7 @@ function appendScript(src) {
         script.src = src;
         script.dataset.zoomSdk = src;
         script.async = true;
+        script.crossOrigin = 'anonymous';
         script.onload = () => {
             script.dataset.loaded = 'true';
             resolve();
@@ -66,10 +65,40 @@ function appendScript(src) {
     });
 }
 
+function ensureSdkPrepared(ZoomMtgEmbedded) {
+    const tasks = [];
+    if (ZoomMtgEmbedded?.preLoadWasm) {
+        tasks.push(Promise.resolve(ZoomMtgEmbedded.preLoadWasm()));
+    }
+    if (ZoomMtgEmbedded?.prepareWebSDK) {
+        tasks.push(
+            Promise.resolve(
+                ZoomMtgEmbedded.prepareWebSDK({
+                    webComponent: false,
+                    language: 'ko-KR',
+                }),
+            ),
+        );
+    }
+
+    return Promise.all(tasks)
+        .then(() => {
+            if (ZoomMtgEmbedded?.i18n) {
+                try {
+                    ZoomMtgEmbedded.i18n.load('ko-KR');
+                    ZoomMtgEmbedded.i18n.reload('ko-KR');
+                } catch (error) {
+                    console.warn('[zoomSdkLoader] Failed to prepare localization:', error);
+                }
+            }
+        })
+        .then(() => ZoomMtgEmbedded);
+}
+
 export function loadZoomEmbeddedSdk() {
     if (typeof window !== 'undefined' && window.ZoomMtgEmbedded) {
         CSS_SOURCES.forEach(appendStylesheet);
-        return Promise.resolve(window.ZoomMtgEmbedded);
+        return ensureSdkPrepared(window.ZoomMtgEmbedded);
     }
 
     if (!loadingPromise) {
@@ -77,12 +106,18 @@ export function loadZoomEmbeddedSdk() {
         loadingPromise = SCRIPT_SOURCES.reduce(
             (promise, src) => promise.then(() => appendScript(src)),
             Promise.resolve(),
-        ).then(() => {
-            if (typeof window === 'undefined' || !window.ZoomMtgEmbedded) {
-                throw new Error('Zoom Meeting SDK를 불러오지 못했습니다.');
-            }
-            return window.ZoomMtgEmbedded;
-        });
+        )
+            .then(() => {
+                if (typeof window === 'undefined' || !window.ZoomMtgEmbedded) {
+                    throw new Error('Zoom Meeting SDK를 불러오지 못했습니다.');
+                }
+                return window.ZoomMtgEmbedded;
+            })
+            .then(ensureSdkPrepared)
+            .catch((error) => {
+                loadingPromise = null;
+                throw error;
+            });
     }
 
     return loadingPromise;

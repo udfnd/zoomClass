@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { loadZoomEmbeddedSdk } from './utils/zoomSdkLoader';
+import { ZOOM_SDK_CDN_BASE, loadZoomEmbeddedSdk } from './utils/zoomSdkLoader';
 
 const STATUS_LABELS = {
     idle: '대기 중',
@@ -131,6 +131,7 @@ export default function MeetingScreen({ meetingContext, onLeaveMeeting }) {
                         zoomAppRoot: zoomRootRef.current,
                         language: 'ko-KR',
                         patchJsMedia: true,
+                        assetPath: ZOOM_SDK_CDN_BASE,
                         customize: {
                             meetingInfo: ['topic', 'host', 'mn', 'pwd', 'participant'],
                             video: { isResizable: true },
