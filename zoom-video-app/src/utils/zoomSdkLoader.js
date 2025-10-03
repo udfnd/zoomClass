@@ -2,27 +2,19 @@ const SDK_VERSION = '3.10.1';
 
 const CDN_SOURCES = [
     {
-        assetPath: 'https://dmogdx0jrul3u.cloudfront.net/sdk',
-        script: `https://dmogdx0jrul3u.cloudfront.net/sdk/zoom-meeting-embedded-${SDK_VERSION}.min.js`,
-        styles: [
-            'https://dmogdx0jrul3u.cloudfront.net/sdk/index.css',
-            'https://dmogdx0jrul3u.cloudfront.net/sdk/embedded/index.css',
-        ],
-    },
-    {
-        assetPath: `https://source.zoom.us/meetingsdk/${SDK_VERSION}`,
-        script: `https://source.zoom.us/meetingsdk/${SDK_VERSION}/lib/zoom-meeting-embedded.min.js`,
-        styles: [
-            `https://source.zoom.us/meetingsdk/${SDK_VERSION}/lib/zoom-meeting-embedded.min.css`,
-            `https://source.zoom.us/meetingsdk/${SDK_VERSION}/lib/css/zoom-meeting-embedded.min.css`,
-        ],
-    },
-    {
         assetPath: 'https://source.zoom.us/meetingsdk',
         script: `https://source.zoom.us/meetingsdk/zoom-meeting-embedded-${SDK_VERSION}.min.js`,
         styles: [
             'https://source.zoom.us/meetingsdk/index.css',
             'https://source.zoom.us/meetingsdk/embedded/index.css',
+        ],
+    },
+    {
+        assetPath: 'https://dmogdx0jrul3u.cloudfront.net/sdk',
+        script: `https://dmogdx0jrul3u.cloudfront.net/sdk/zoom-meeting-embedded-${SDK_VERSION}.min.js`,
+        styles: [
+            'https://dmogdx0jrul3u.cloudfront.net/sdk/index.css',
+            'https://dmogdx0jrul3u.cloudfront.net/sdk/embedded/index.css',
         ],
     },
     {
@@ -60,7 +52,6 @@ function appendStylesheet(href) {
     link.href = href;
     link.dataset.zoomSdk = href;
     link.crossOrigin = 'anonymous';
-    link.referrerPolicy = 'no-referrer';
     link.onload = () => {
         link.dataset.loaded = 'true';
     };
