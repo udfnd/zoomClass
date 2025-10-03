@@ -7,6 +7,7 @@ const {
   getBackendOrigin,
 } = require('./config/backend-url');
 const { buildConnectSrcValues } = require('./config/connect-src');
+const { buildCspString } = require('./config/csp');
 
 const backendEnvUrl = ensureHttpProtocol(
   process.env.BACKEND_BASE_URL || process.env.TOKEN_SERVER_URL || DEFAULT_BACKEND_FALLBACK,
@@ -19,16 +20,9 @@ if (!backendOrigin) {
 
 const connectSrcValues = buildConnectSrcValues(backendOrigin);
 
-const devContentSecurityPolicy = [
-  "default-src 'self' 'unsafe-inline' data: blob:;",
-  "img-src 'self' data: blob:;",
-  "font-src 'self' https://fonts.gstatic.com data:;",
-  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;",
-  "script-src 'self' 'unsafe-eval' 'unsafe-inline' data:;",
-  `connect-src ${Array.from(connectSrcValues).join(' ')};`,
-  "frame-src 'self' https://*.zoom.us https://*.zoomgov.com;",
-  "media-src 'self' blob: data:;",
-].join(' ');
+const devContentSecurityPolicy = buildCspString({
+  connectSrc: Array.from(connectSrcValues),
+});
 
 module.exports = {
   packagerConfig: {

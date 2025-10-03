@@ -8,6 +8,7 @@ const {
   getBackendOrigin,
 } = require('../config/backend-url');
 const { buildConnectSrcValues } = require('../config/connect-src');
+const { buildCspString } = require('../config/csp');
 if (require('electron-squirrel-startup')) {
   app.quit();
 }
