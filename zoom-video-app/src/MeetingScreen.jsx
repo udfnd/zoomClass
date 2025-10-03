@@ -4,6 +4,8 @@ import { normalizeBackendUrl } from './utils/backend';
 
 const APP_KEY = process.env.ZOOM_SDK_KEY;
 
+const SDK_VERSION = process.env.ZOOM_SDK_VERSION || '2.1.10';
+
 const normalizeDependentAssetsPath = (value) => {
     if (!value) {
         return 'Global';
@@ -25,12 +27,44 @@ const normalizeDependentAssetsPath = (value) => {
         return 'CN';
     }
 
-    return trimmedValue.endsWith('/') ? trimmedValue : `${trimmedValue}/`;
+    return trimmedValue;
 };
 
 const SDK_DEPENDENT_ASSETS = normalizeDependentAssetsPath(
     process.env.ZOOM_SDK_DEPENDENT_ASSETS || process.env.ZOOM_SDK_LIB_URL || '',
 );
+
+const removeTrailingSlash = (value) => {
+    if (!value) {
+        return value;
+    }
+
+    return value.replace(/\/+$/, '');
+};
+
+const resolveZoomJSLibConfiguration = () => {
+    switch (SDK_DEPENDENT_ASSETS) {
+        case 'CDN':
+        case 'Global':
+            return {
+                initRegion: 'Global',
+                jsLibRoot: `https://source.zoom.us/videosdk/${SDK_VERSION}/lib`,
+                wasmPath: '/lib',
+            };
+        case 'CN':
+            return {
+                initRegion: 'CN',
+                jsLibRoot: `https://jssdk.zoomus.cn/videosdk/${SDK_VERSION}/lib`,
+                wasmPath: '/lib',
+            };
+        default:
+            return {
+                initRegion: SDK_DEPENDENT_ASSETS,
+                jsLibRoot: removeTrailingSlash(SDK_DEPENDENT_ASSETS),
+                wasmPath: '/lib',
+            };
+    }
+};
 const DEFAULT_SHARE_DIMENSIONS = { width: 960, height: 540 };
 
 function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
@@ -74,15 +108,21 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
 
         try {
             console.log('Initializing Zoom SDK...');
+            const { initRegion, jsLibRoot, wasmPath } = resolveZoomJSLibConfiguration();
+
+            if (typeof ZoomVideo.setZoomJSLib === 'function') {
+                ZoomVideo.setZoomJSLib(jsLibRoot, wasmPath);
+            }
+
             if (typeof ZoomVideo.preloadDependentAssets === 'function') {
                 try {
-                    ZoomVideo.preloadDependentAssets(SDK_DEPENDENT_ASSETS);
+                    await ZoomVideo.preloadDependentAssets();
                 } catch (preloadError) {
                     console.warn('Failed to preload Zoom SDK dependent assets:', preloadError);
                 }
             }
             client.current = ZoomVideo.createClient();
-            const initResult = await client.current.init('en-US', SDK_DEPENDENT_ASSETS, { patchJsMedia: true });
+            const initResult = await client.current.init('en-US', initRegion, { patchJsMedia: true });
             if (initResult && typeof initResult === 'object') {
                 throw new Error(initResult.reason || 'Failed to initialize Zoom SDK');
             }
