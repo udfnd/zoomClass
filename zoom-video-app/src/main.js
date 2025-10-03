@@ -100,6 +100,24 @@ const mergeConnectSrcDirective = (headerValue, sources) => {
   return `${updatedDirectives.join('; ')};`;
 };
 
+const CROSS_ORIGIN_ISOLATION_HEADERS = {
+  'Cross-Origin-Opener-Policy': 'same-origin',
+  'Cross-Origin-Embedder-Policy': 'require-corp',
+  'Cross-Origin-Resource-Policy': 'cross-origin',
+};
+
+const applyHeaderValue = (responseHeaders, key, value) => {
+  const existingKey = Object.keys(responseHeaders || {}).find(
+    (headerKey) => headerKey.toLowerCase() === key.toLowerCase(),
+  );
+
+  if (existingKey) {
+    responseHeaders[existingKey] = [value];
+  } else {
+    responseHeaders[key] = [value];
+  }
+};
+
 const installCspAllowlist = () => {
   const activeSession = session.defaultSession;
   if (!activeSession) {
@@ -129,6 +147,10 @@ const installCspAllowlist = () => {
         `connect-src ${connectSrcAllowlist.join(' ')};`,
       ];
     }
+
+    Object.entries(CROSS_ORIGIN_ISOLATION_HEADERS).forEach(([header, value]) => {
+      applyHeaderValue(responseHeaders, header, value);
+    });
 
     callback({ responseHeaders });
   });
