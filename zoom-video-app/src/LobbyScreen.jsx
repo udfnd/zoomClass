@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import ReservationModal from './ReservationModal';
 import CalendarView from './CalendarView';
-import { getBackendLabel, normalizeBackendUrl } from './utils/backend';
+import { getBackendLabel, normalizeBackendUrl, parseJoinLink } from './utils/backend';
 
 function LobbyScreen({
     backendUrl,
@@ -38,6 +38,20 @@ function LobbyScreen({
         if (!backendUrl) return '구성 필요';
         return getBackendLabel(backendUrl) || '구성 필요';
     }, [backendUrl]);
+
+    const joinLinkInfo = useMemo(() => parseJoinLink(joinSessionName), [joinSessionName]);
+
+    const canJoinWithLinkBackend = useMemo(() => {
+        if (!joinLinkInfo) {
+            return false;
+        }
+
+        if (joinLinkInfo.backendUrl) {
+            return true;
+        }
+
+        return Boolean(sanitizedBackendUrl);
+    }, [joinLinkInfo, sanitizedBackendUrl]);
 
     const fetchMeetings = useCallback(async (endpoint) => {
         if (!sanitizedBackendUrl) {
@@ -138,17 +152,49 @@ function LobbyScreen({
         }
     };
 
-    const handleJoinSession = () => {
+    const handleJoinSession = useCallback(async () => {
         if (!joinSessionName.trim()) {
             alert('참여할 수업 이름을 입력해주세요.');
             return;
         }
-        if (!sanitizedBackendUrl) {
+
+        let nextSessionName = joinSessionName.trim();
+        let backendForJoin = sanitizedBackendUrl;
+
+        if (joinLinkInfo) {
+            nextSessionName = joinLinkInfo.sessionName.trim();
+
+            if (!nextSessionName) {
+                alert('참여 링크에서 세션 이름을 읽을 수 없습니다. 링크를 다시 확인해주세요.');
+                return;
+            }
+
+            if (joinLinkInfo.backendUrl) {
+                backendForJoin = joinLinkInfo.backendUrl;
+            }
+
+            if (!backendForJoin) {
+                alert('참여 링크에서 백엔드 주소를 확인할 수 없습니다. 먼저 연결 설정을 완료해주세요.');
+                return;
+            }
+
+            if (onUpdateBackendUrl && backendForJoin !== sanitizedBackendUrl) {
+                try {
+                    backendForJoin = await onUpdateBackendUrl(backendForJoin);
+                } catch (error) {
+                    console.error('Failed to update backend URL from join link:', error);
+                    alert(`링크에서 백엔드 주소를 적용하지 못했습니다: ${error.message}`);
+                    return;
+                }
+            }
+        } else if (!sanitizedBackendUrl) {
             alert('백엔드 URL이 구성되지 않았습니다. 먼저 연결 설정을 완료해주세요.');
             return;
         }
-        onJoinMeeting(joinSessionName.trim(), userName.trim() || `User-${Math.floor(Math.random() * 10000)}`);
-    };
+
+        const resolvedUser = userName.trim() || `User-${Math.floor(Math.random() * 10000)}`;
+        onJoinMeeting(nextSessionName, resolvedUser, backendForJoin);
+    }, [joinSessionName, joinLinkInfo, sanitizedBackendUrl, onUpdateBackendUrl, onJoinMeeting, userName]);
 
     const handleBackendSubmit = async (event) => {
         event.preventDefault();
@@ -298,17 +344,34 @@ function LobbyScreen({
                     <div className="control-card">
                         <div className="control-card__header">
                             <h2>수업 참여</h2>
-                            <p>이미 예약된 수업이나 초대받은 세션 이름으로 참여하세요.</p>
+                            <p>이미 예약된 수업 이름을 입력하거나, 초대 링크를 붙여넣어 참여하세요.</p>
                         </div>
                         <div className="form-field">
-                            <label htmlFor="join-session-name">참여할 수업 이름</label>
+                            <label htmlFor="join-session-name">참여할 수업 이름 또는 링크</label>
                             <input
                                 id="join-session-name"
                                 type="text"
-                                placeholder="예: Advanced Listening"
+                                placeholder="예: Advanced Listening 또는 http://.../join?sessionName=..."
                                 value={joinSessionName}
                                 onChange={(e) => setJoinSessionName(e.target.value)}
                             />
+                            {joinLinkInfo && (
+                                <p className="form-helper-text">
+                                    링크에서 수업 이름 <strong>{joinLinkInfo.sessionName}</strong>
+                                    {joinLinkInfo.backendUrl && (
+                                        <>
+                                            {' '}
+                                            • 백엔드 <strong>{getBackendLabel(joinLinkInfo.backendUrl)}</strong>
+                                        </>
+                                    )}{' '}
+                                    을(를) 인식했습니다.
+                                    {joinLinkInfo.displayName && (
+                                        <>
+                                            <br />추천 사용자 이름: <strong>{joinLinkInfo.displayName}</strong>
+                                        </>
+                                    )}
+                                </p>
+                            )}
                         </div>
                         <div className="form-field">
                             <label htmlFor="join-user-name">사용자 이름</label>
@@ -321,7 +384,11 @@ function LobbyScreen({
                             />
                         </div>
                         <div className="control-card__actions">
-                            <button className="btn btn-secondary" onClick={handleJoinSession} disabled={!backendConfigured}>
+                            <button
+                                className="btn btn-secondary"
+                                onClick={handleJoinSession}
+                                disabled={!backendConfigured && !canJoinWithLinkBackend}
+                            >
                                 수업 참여
                             </button>
                         </div>
