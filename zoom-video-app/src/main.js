@@ -1,12 +1,138 @@
 // src/main.js
 require('dotenv').config();
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, session } = require('electron');
 const Store = require('electron-store').default;
+const {
+  DEFAULT_BACKEND_FALLBACK,
+  normalizeBackendUrl,
+  getBackendOrigin,
+} = require('../config/backend-url');
+const { buildConnectSrcValues } = require('../config/connect-src');
 if (require('electron-squirrel-startup')) {
   app.quit();
 }
 
 const store = new Store();
+
+const readStoreBackendOverride = () => {
+  if (!store) {
+    return '';
+  }
+
+  try {
+    return normalizeBackendUrl(store.get('backendUrlOverride', ''));
+  } catch (error) {
+    console.warn('Failed to read backend override from electron-store:', error);
+    return '';
+  }
+};
+
+const readEnvBackendUrl = () =>
+  normalizeBackendUrl(
+    process.env.BACKEND_BASE_URL || process.env.TOKEN_SERVER_URL || DEFAULT_BACKEND_FALLBACK,
+  );
+
+let envBackendUrl = readEnvBackendUrl();
+let overrideBackendUrl = readStoreBackendOverride();
+
+const computeConnectSrcAllowlist = () => {
+  const additions = [];
+
+  const envOrigin = getBackendOrigin(envBackendUrl);
+  if (envOrigin) {
+    additions.push(envOrigin);
+  } else if (envBackendUrl) {
+    additions.push(envBackendUrl);
+  }
+
+  const overrideOrigin = getBackendOrigin(overrideBackendUrl);
+  if (overrideOrigin) {
+    additions.push(overrideOrigin);
+  } else if (overrideBackendUrl) {
+    additions.push(overrideBackendUrl);
+  }
+
+  return Array.from(buildConnectSrcValues(...additions));
+};
+
+let connectSrcAllowlist = computeConnectSrcAllowlist();
+
+const updateOverrideBackendUrl = (value) => {
+  overrideBackendUrl = normalizeBackendUrl(value);
+  connectSrcAllowlist = computeConnectSrcAllowlist();
+};
+
+const mergeConnectSrcDirective = (headerValue, sources) => {
+  const normalizedSources = Array.from(new Set((sources || []).filter(Boolean)));
+  if (normalizedSources.length === 0) {
+    return headerValue || '';
+  }
+
+  if (!headerValue) {
+    return `connect-src ${normalizedSources.join(' ')};`;
+  }
+
+  const directives = headerValue
+    .split(';')
+    .map((directive) => directive.trim())
+    .filter(Boolean);
+
+  let replaced = false;
+  const updatedDirectives = directives.map((directive) => {
+    if (!directive.toLowerCase().startsWith('connect-src')) {
+      return directive;
+    }
+
+    replaced = true;
+    const existingTokens = directive
+      .slice('connect-src'.length)
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+    const merged = new Set([...existingTokens, ...normalizedSources]);
+    return `connect-src ${Array.from(merged).join(' ')}`;
+  });
+
+  if (!replaced) {
+    updatedDirectives.push(`connect-src ${normalizedSources.join(' ')}`);
+  }
+
+  return `${updatedDirectives.join('; ')};`;
+};
+
+const installCspAllowlist = () => {
+  const activeSession = session.defaultSession;
+  if (!activeSession) {
+    return;
+  }
+
+  activeSession.webRequest.onHeadersReceived((details, callback) => {
+    if (details.resourceType !== 'mainFrame') {
+      callback({ responseHeaders: details.responseHeaders });
+      return;
+    }
+
+    const responseHeaders = details.responseHeaders || {};
+    const headerKey = Object.keys(responseHeaders).find(
+      (key) => key.toLowerCase() === 'content-security-policy',
+    );
+
+    if (headerKey) {
+      const existingValue = Array.isArray(responseHeaders[headerKey])
+        ? responseHeaders[headerKey].join(' ')
+        : `${responseHeaders[headerKey] || ''}`;
+      responseHeaders[headerKey] = [
+        mergeConnectSrcDirective(existingValue, connectSrcAllowlist),
+      ];
+    } else {
+      responseHeaders['Content-Security-Policy'] = [
+        `connect-src ${connectSrcAllowlist.join(' ')};`,
+      ];
+    }
+
+    callback({ responseHeaders });
+  });
+};
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -34,6 +160,8 @@ app.whenReady().then(() => {
     app.quit(); // store가 없으면 앱 실행 불가
     return;
   }
+
+  installCspAllowlist();
   createWindow();
 
   app.on('activate', () => {
@@ -52,11 +180,18 @@ app.on('window-all-closed', () => {
 });
 
 const resolveBackendUrl = () => {
-  const base = process.env.BACKEND_BASE_URL || process.env.TOKEN_SERVER_URL || 'http://localhost:4000';
-  if (!base) {
+  const override = readStoreBackendOverride();
+  if (override) {
+    updateOverrideBackendUrl(override);
+    return override;
+  }
+
+  envBackendUrl = envBackendUrl || readEnvBackendUrl();
+  if (!envBackendUrl) {
     console.error('No backend URL is configured. Set BACKEND_BASE_URL or TOKEN_SERVER_URL.');
   }
-  return base;
+  connectSrcAllowlist = computeConnectSrcAllowlist();
+  return envBackendUrl;
 };
 
 ipcMain.handle('get-token-url', async () => {
@@ -82,6 +217,9 @@ ipcMain.handle('electron-store-set', async (event, key, value) => {
     return false;
   }
   store.set(key, value);
+  if (key === 'backendUrlOverride') {
+    updateOverrideBackendUrl(value);
+  }
   return true;
 });
 
@@ -91,6 +229,9 @@ ipcMain.handle('electron-store-delete', async (event, key) => {
     return false;
   }
   store.delete(key);
+  if (key === 'backendUrlOverride') {
+    updateOverrideBackendUrl('');
+  }
   return true;
 });
 
@@ -100,5 +241,12 @@ ipcMain.handle('electron-store-clear', async () => {
     return false;
   }
   store.clear();
+  updateOverrideBackendUrl('');
   return true;
 });
+
+if (store?.onDidChange) {
+  store.onDidChange('backendUrlOverride', (newValue) => {
+    updateOverrideBackendUrl(newValue);
+  });
+}
