@@ -42,7 +42,7 @@ function LobbyScreen({
     const joinLinkInfo = useMemo(() => parseJoinLink(joinSessionName), [joinSessionName]);
 
     const canJoinWithLinkBackend = useMemo(() => {
-        if (!joinLinkInfo) {
+        if (!joinLinkInfo || !joinLinkInfo.meetingNumber) {
             return false;
         }
 
@@ -125,27 +125,50 @@ function LobbyScreen({
 
         const trimmedSession = newSessionName.trim();
         const resolvedUser = userName.trim() || `User-${Math.floor(Math.random() * 10000)}`;
-        const startTime = new Date().toISOString();
 
         try {
-            const response = await fetch(`${sanitizedBackendUrl}/meetings`, {
+            const response = await fetch(`${sanitizedBackendUrl}/meeting/create`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    sessionName: trimmedSession,
+                    topic: trimmedSession,
                     hostName: resolvedUser,
-                    startTime,
                 }),
             });
 
+            const payload = await response.json().catch(() => ({}));
+
             if (!response.ok) {
-                const errorBody = await response.json().catch(() => ({}));
-                throw new Error(errorBody.error || errorBody.message || response.statusText);
+                throw new Error(payload.error || payload.message || '수업 생성 요청이 실패했습니다.');
+            }
+
+            const meeting = payload.meeting || payload;
+            const meetingNumber = meeting.meetingNumber || meeting.meeting_id || meeting.id;
+            const signature = meeting.signature || meeting.hostSignature;
+
+            if (!meetingNumber || !signature || !meeting.sdkKey) {
+                throw new Error('백엔드에서 필요한 회의 정보를 받지 못했습니다.');
             }
 
             await loadReservations();
             await loadUpcomingReservations();
-            onJoinMeeting(trimmedSession, resolvedUser);
+
+            onJoinMeeting(
+                {
+                    topic: meeting.topic || trimmedSession,
+                    hostName: meeting.hostName || resolvedUser,
+                    userName: resolvedUser,
+                    meetingNumber: `${meetingNumber}`,
+                    passcode: meeting.passcode || meeting.password || '',
+                    signature,
+                    sdkKey: meeting.sdkKey,
+                    joinUrl: meeting.joinUrl || meeting.join_url || '',
+                    shareLink: meeting.shareLink || meeting.share_link || meeting.joinHelperUrl || payload.shareLink,
+                    startUrl: meeting.startUrl || meeting.start_url || '',
+                    role: 1,
+                },
+                sanitizedBackendUrl,
+            );
         } catch (error) {
             console.error('Failed to create meeting:', error);
             alert(`수업 생성에 실패했습니다: ${error.message}`);
@@ -154,46 +177,79 @@ function LobbyScreen({
 
     const handleJoinSession = useCallback(async () => {
         if (!joinSessionName.trim()) {
-            alert('참여할 수업 이름을 입력해주세요.');
+            alert('참여할 수업 링크를 입력해주세요.');
             return;
         }
 
-        let nextSessionName = joinSessionName.trim();
-        let backendForJoin = sanitizedBackendUrl;
+        if (!joinLinkInfo) {
+            alert('올바른 초대 링크 형식이 아닙니다. 수업 생성 시 제공된 링크를 입력해주세요.');
+            return;
+        }
 
-        if (joinLinkInfo) {
-            nextSessionName = joinLinkInfo.sessionName.trim();
+        if (!joinLinkInfo.meetingNumber) {
+            alert('초대 링크에 회의 번호가 없습니다. 링크를 다시 확인해주세요.');
+            return;
+        }
 
-            if (!nextSessionName) {
-                alert('참여 링크에서 세션 이름을 읽을 수 없습니다. 링크를 다시 확인해주세요.');
-                return;
-            }
+        let backendForJoin = joinLinkInfo.backendUrl || sanitizedBackendUrl;
 
-            if (joinLinkInfo.backendUrl) {
-                backendForJoin = joinLinkInfo.backendUrl;
-            }
-
-            if (!backendForJoin) {
-                alert('참여 링크에서 백엔드 주소를 확인할 수 없습니다. 먼저 연결 설정을 완료해주세요.');
-                return;
-            }
-
-            if (onUpdateBackendUrl && backendForJoin !== sanitizedBackendUrl) {
-                try {
-                    backendForJoin = await onUpdateBackendUrl(backendForJoin);
-                } catch (error) {
-                    console.error('Failed to update backend URL from join link:', error);
-                    alert(`링크에서 백엔드 주소를 적용하지 못했습니다: ${error.message}`);
-                    return;
-                }
-            }
-        } else if (!sanitizedBackendUrl) {
+        if (!backendForJoin) {
             alert('백엔드 URL이 구성되지 않았습니다. 먼저 연결 설정을 완료해주세요.');
             return;
         }
 
+        if (onUpdateBackendUrl && backendForJoin !== sanitizedBackendUrl) {
+            try {
+                backendForJoin = await onUpdateBackendUrl(backendForJoin);
+            } catch (error) {
+                console.error('Failed to update backend URL from join link:', error);
+                alert(`링크에서 백엔드 주소를 적용하지 못했습니다: ${error.message}`);
+                return;
+            }
+        }
+
         const resolvedUser = userName.trim() || `User-${Math.floor(Math.random() * 10000)}`;
-        onJoinMeeting(nextSessionName, resolvedUser, backendForJoin);
+
+        try {
+            const response = await fetch(`${backendForJoin}/meeting/signature`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    meetingNumber: joinLinkInfo.meetingNumber,
+                    role: 0,
+                }),
+            });
+
+            const payload = await response.json().catch(() => ({}));
+
+            if (!response.ok) {
+                throw new Error(payload.error || payload.message || '참여용 토큰을 가져오지 못했습니다.');
+            }
+
+            const signature = payload.signature || payload.participantSignature;
+            if (!signature || !payload.sdkKey) {
+                throw new Error('회의 참가에 필요한 정보를 받지 못했습니다.');
+            }
+
+            onJoinMeeting(
+                {
+                    topic: joinLinkInfo.topic || joinLinkInfo.sessionName,
+                    hostName: joinLinkInfo.hostName || '',
+                    userName: resolvedUser,
+                    meetingNumber: `${joinLinkInfo.meetingNumber}`,
+                    passcode: joinLinkInfo.passcode || '',
+                    signature,
+                    sdkKey: payload.sdkKey,
+                    joinUrl: joinLinkInfo.joinUrl,
+                    shareLink: joinLinkInfo.joinUrl,
+                    role: 0,
+                },
+                backendForJoin,
+            );
+        } catch (error) {
+            console.error('Failed to join meeting:', error);
+            alert(`수업 참여에 실패했습니다: ${error.message}`);
+        }
     }, [joinSessionName, joinLinkInfo, sanitizedBackendUrl, onUpdateBackendUrl, onJoinMeeting, userName]);
 
     const handleBackendSubmit = async (event) => {
@@ -347,24 +403,32 @@ function LobbyScreen({
                             <p>이미 예약된 수업 이름을 입력하거나, 초대 링크를 붙여넣어 참여하세요.</p>
                         </div>
                         <div className="form-field">
-                            <label htmlFor="join-session-name">참여할 수업 이름 또는 링크</label>
+                            <label htmlFor="join-session-name">참여할 수업 초대 링크</label>
                             <input
                                 id="join-session-name"
                                 type="text"
-                                placeholder="예: Advanced Listening 또는 http://.../join?sessionName=..."
+                                placeholder="예: http://.../join?meetingNumber=123456789&passcode=000000"
                                 value={joinSessionName}
                                 onChange={(e) => setJoinSessionName(e.target.value)}
                             />
                             {joinLinkInfo && (
                                 <p className="form-helper-text">
-                                    링크에서 수업 이름 <strong>{joinLinkInfo.sessionName}</strong>
+                                    회의 번호 <strong>{joinLinkInfo.meetingNumber}</strong>
+                                    {joinLinkInfo.topic && (
+                                        <>
+                                            {' '}• 수업 이름 <strong>{joinLinkInfo.topic}</strong>
+                                        </>
+                                    )}
                                     {joinLinkInfo.backendUrl && (
                                         <>
-                                            {' '}
-                                            • 백엔드 <strong>{getBackendLabel(joinLinkInfo.backendUrl)}</strong>
+                                            {' '}• 백엔드 <strong>{getBackendLabel(joinLinkInfo.backendUrl)}</strong>
                                         </>
-                                    )}{' '}
-                                    을(를) 인식했습니다.
+                                    )}
+                                    {joinLinkInfo.passcode && (
+                                        <>
+                                            <br />회의 암호: <strong>{joinLinkInfo.passcode}</strong>
+                                        </>
+                                    )}
                                     {joinLinkInfo.displayName && (
                                         <>
                                             <br />추천 사용자 이름: <strong>{joinLinkInfo.displayName}</strong>
@@ -421,7 +485,14 @@ function LobbyScreen({
                                     </div>
                                     <button
                                         className="btn btn-outline"
-                                        onClick={() => onJoinMeeting(res.sessionName, res.userName)}
+                                        onClick={() =>
+                                            alert(
+                                                [
+                                                    '예약된 수업의 초대 링크를 사용해 참여해주세요.',
+                                                    '수업 생성 시 안내된 링크를 입력하면 참가할 수 있습니다.',
+                                                ].join(' '),
+                                            )
+                                        }
                                     >
                                         바로 참여
                                     </button>

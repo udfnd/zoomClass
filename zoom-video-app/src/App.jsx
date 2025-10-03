@@ -8,8 +8,7 @@ const APP_KEY = process.env.ZOOM_SDK_KEY; // Webpack DefinePlugin을 통해 주�
 
 function App() {
     const [isInMeeting, setIsInMeeting] = useState(false);
-    const [sessionName, setSessionName] = useState('');
-    const [userName, setUserName] = useState(`User-${Math.floor(Math.random() * 10000)}`); // 임시 사용자 이름
+    const [meetingContext, setMeetingContext] = useState(null);
     const [backendUrl, setBackendUrl] = useState('');
     const [defaultBackendUrl, setDefaultBackendUrl] = useState('');
     const [isBackendResolved, setIsBackendResolved] = useState(false);
@@ -124,7 +123,7 @@ function App() {
     }, [clearBackendOverride, defaultBackendUrl]);
 
     const joinMeeting = useCallback(
-        (name, user, backendOverride) => {
+        (context, backendOverride) => {
             const normalizedOverride = normalizeBackendUrl(backendOverride);
             const effectiveBackend = normalizedOverride || backendUrl;
 
@@ -132,13 +131,17 @@ function App() {
                 alert('백엔드 서버 주소가 구성되지 않았습니다. 먼저 연결 설정을 완료해주세요.');
                 return;
             }
-            if (!name || !user) {
-                alert('세션 이름과 사용자 이름을 입력해주세요.');
+
+            if (!context || !context.meetingNumber || !context.signature || !context.sdkKey) {
+                alert('회의에 참여하기 위한 필수 정보가 누락되었습니다. 다시 시도해주세요.');
                 return;
             }
 
-            setSessionName(name);
-            setUserName(user);
+            if (normalizedOverride && normalizedOverride !== backendUrl) {
+                setBackendUrl(normalizedOverride);
+            }
+
+            setMeetingContext({ ...context, backendUrl: effectiveBackend });
             setIsInMeeting(true);
         },
         [backendUrl],
@@ -146,7 +149,7 @@ function App() {
 
     const leaveMeeting = useCallback(async () => {
         setIsInMeeting(false);
-        setSessionName('');
+        setMeetingContext(null);
         // MeetingScreen 내부에서 client.leave()가 호출될 것이므로 여기서는 상태만 변경
     }, []);
 
@@ -188,12 +191,7 @@ function App() {
                     onResetBackendUrl={resetBackendUrl}
                 />
             ) : (
-                <MeetingScreen
-                    sessionName={sessionName}
-                    userName={userName}
-                    backendUrl={backendUrl}
-                    onLeaveMeeting={leaveMeeting}
-                />
+                <MeetingScreen meetingContext={meetingContext} onLeaveMeeting={leaveMeeting} />
             )}
         </div>
     );
