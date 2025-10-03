@@ -1,26 +1,16 @@
 const SDK_VERSION = '3.10.1';
-const SDK_CDN_ROOT = 'https://source.zoom.us/meetingsdk';
-const SDK_VERSION_BASE = `${SDK_CDN_ROOT}/${SDK_VERSION}`;
-const SDK_LIB_BASE = `${SDK_VERSION_BASE}/lib`;
-const SDK_CSS_BASE = `${SDK_VERSION_BASE}/css`;
+const SDK_CDN_BASE = 'https://source.zoom.us/sdk';
 
 export const ZOOM_SDK_VERSION = SDK_VERSION;
-export const ZOOM_SDK_CDN_BASE = SDK_LIB_BASE;
+export const ZOOM_SDK_CDN_BASE = SDK_CDN_BASE;
 
 const SCRIPT_SOURCES = [
-    `${SDK_LIB_BASE}/vendor/react.min.js`,
-    `${SDK_LIB_BASE}/vendor/react-dom.min.js`,
-    `${SDK_LIB_BASE}/vendor/redux.min.js`,
-    `${SDK_LIB_BASE}/vendor/redux-thunk.min.js`,
-    `${SDK_LIB_BASE}/vendor/lodash.min.js`,
-    `${SDK_LIB_BASE}/av/av.min.js`,
-    `${SDK_LIB_BASE}/zoom-meeting-embedded-${SDK_VERSION}.min.js`,
+    `${SDK_CDN_BASE}/zoom-meeting-embedded-${SDK_VERSION}.min.js`,
 ];
 
 const CSS_SOURCES = [
-    `${SDK_CSS_BASE}/bootstrap.css`,
-    `${SDK_CSS_BASE}/react-select.css`,
-    `${SDK_CSS_BASE}/zoom-meeting-embedded.css`,
+    `${SDK_CDN_BASE}/index.css`,
+    `${SDK_CDN_BASE}/embedded/index.css`,
 ];
 
 let loadingPromise = null;
@@ -38,6 +28,7 @@ function appendStylesheet(href) {
     link.rel = 'stylesheet';
     link.href = href;
     link.dataset.zoomSdk = href;
+    link.crossOrigin = 'anonymous';
     document.head.appendChild(link);
 }
 
@@ -76,13 +67,6 @@ function appendScript(src) {
 
 function ensureSdkPrepared(ZoomMtgEmbedded) {
     const tasks = [];
-    if (ZoomMtgEmbedded?.setZoomJSLib) {
-        try {
-            ZoomMtgEmbedded.setZoomJSLib(SDK_LIB_BASE, '/av');
-        } catch (error) {
-            console.warn('[zoomSdkLoader] Failed to set Zoom JS lib:', error);
-        }
-    }
     if (ZoomMtgEmbedded?.preLoadWasm) {
         tasks.push(Promise.resolve(ZoomMtgEmbedded.preLoadWasm()));
     }
