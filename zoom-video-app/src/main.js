@@ -8,6 +8,7 @@ const {
   getBackendOrigin,
 } = require('../config/backend-url');
 const { buildConnectSrcValues } = require('../config/connect-src');
+const { buildCspString } = require('../config/csp');
 if (require('electron-squirrel-startup')) {
   app.quit();
 }
@@ -57,47 +58,11 @@ const computeConnectSrcAllowlist = () => {
 
 let connectSrcAllowlist = computeConnectSrcAllowlist();
 
+const buildCspHeaderValue = () => `${buildCspString({ connectSrc: Array.from(connectSrcAllowlist) })};`;
+
 const updateOverrideBackendUrl = (value) => {
   overrideBackendUrl = normalizeBackendUrl(value);
   connectSrcAllowlist = computeConnectSrcAllowlist();
-};
-
-const mergeConnectSrcDirective = (headerValue, sources) => {
-  const normalizedSources = Array.from(new Set((sources || []).filter(Boolean)));
-  if (normalizedSources.length === 0) {
-    return headerValue || '';
-  }
-
-  if (!headerValue) {
-    return `connect-src ${normalizedSources.join(' ')};`;
-  }
-
-  const directives = headerValue
-    .split(';')
-    .map((directive) => directive.trim())
-    .filter(Boolean);
-
-  let replaced = false;
-  const updatedDirectives = directives.map((directive) => {
-    if (!directive.toLowerCase().startsWith('connect-src')) {
-      return directive;
-    }
-
-    replaced = true;
-    const existingTokens = directive
-      .slice('connect-src'.length)
-      .trim()
-      .split(/\s+/)
-      .filter(Boolean);
-    const merged = new Set([...existingTokens, ...normalizedSources]);
-    return `connect-src ${Array.from(merged).join(' ')}`;
-  });
-
-  if (!replaced) {
-    updatedDirectives.push(`connect-src ${normalizedSources.join(' ')}`);
-  }
-
-  return `${updatedDirectives.join('; ')};`;
 };
 
 const CROSS_ORIGIN_ISOLATION_HEADERS = {
@@ -131,22 +96,8 @@ const installCspAllowlist = () => {
     }
 
     const responseHeaders = details.responseHeaders || {};
-    const headerKey = Object.keys(responseHeaders).find(
-      (key) => key.toLowerCase() === 'content-security-policy',
-    );
-
-    if (headerKey) {
-      const existingValue = Array.isArray(responseHeaders[headerKey])
-        ? responseHeaders[headerKey].join(' ')
-        : `${responseHeaders[headerKey] || ''}`;
-      responseHeaders[headerKey] = [
-        mergeConnectSrcDirective(existingValue, connectSrcAllowlist),
-      ];
-    } else {
-      responseHeaders['Content-Security-Policy'] = [
-        `connect-src ${connectSrcAllowlist.join(' ')};`,
-      ];
-    }
+    const cspValue = buildCspHeaderValue();
+    applyHeaderValue(responseHeaders, 'Content-Security-Policy', cspValue);
 
     Object.entries(CROSS_ORIGIN_ISOLATION_HEADERS).forEach(([header, value]) => {
       applyHeaderValue(responseHeaders, header, value);
