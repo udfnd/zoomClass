@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import ZoomVideo, { SharePrivilege, VideoQuality } from '@zoom/videosdk';
+import zoomVideoSdkPackage from '@zoom/videosdk/package.json';
 import { normalizeBackendUrl } from './utils/backend';
 
 const APP_KEY = process.env.ZOOM_SDK_KEY;
@@ -20,30 +21,57 @@ const removeTrailingSlash = (value) => {
     return value.replace(/\/+$/, '');
 };
 
-const resolveSdkVersion = () => {
-    const envOverride = sanitizeString(process.env.ZOOM_SDK_VERSION);
-    if (envOverride) {
-        return envOverride;
+const SDK_PACKAGE_VERSION = sanitizeString(zoomVideoSdkPackage?.version);
+
+const collectSdkVersions = () => {
+    const versions = [];
+    const addUniqueVersion = (version, { prioritize = false } = {}) => {
+        const sanitizedVersion = sanitizeString(version);
+        if (!sanitizedVersion) {
+            return;
+        }
+
+        const alreadyIncluded = versions.includes(sanitizedVersion);
+        if (alreadyIncluded) {
+            return;
+        }
+
+        if (prioritize) {
+            versions.unshift(sanitizedVersion);
+        } else {
+            versions.push(sanitizedVersion);
+        }
+    };
+
+    addUniqueVersion(SDK_PACKAGE_VERSION, { prioritize: true });
+    addUniqueVersion(ZoomVideo?.VERSION);
+    addUniqueVersion(ZoomVideo?.version);
+
+    const envConfiguredVersion =
+        sanitizeString(process.env.ZOOM_SDK_VERSION) ||
+        sanitizeString(process.env.ZOOM_SDK_LIB_VERSION);
+    if (
+        envConfiguredVersion &&
+        SDK_PACKAGE_VERSION &&
+        envConfiguredVersion !== SDK_PACKAGE_VERSION
+    ) {
+        console.warn(
+            `Configured Zoom SDK version (${envConfiguredVersion}) differs from the installed package version (${SDK_PACKAGE_VERSION}). Attempting both to maximise compatibility.`,
+        );
+    }
+    addUniqueVersion(envConfiguredVersion);
+
+    if (versions.length === 0) {
+        versions.push('latest');
     }
 
-    const sdkReportedVersion = sanitizeString(ZoomVideo?.VERSION);
-    if (sdkReportedVersion) {
-        return sdkReportedVersion;
-    }
-
-    return 'latest';
+    return versions;
 };
 
-const SDK_VERSION = resolveSdkVersion();
-
-const normalizeDependentAssetsPath = (value) => {
-    if (!value) {
-        return 'Global';
-    }
-
+const normalizeDependentAssetsValue = (value) => {
     const trimmedValue = sanitizeString(value);
     if (!trimmedValue) {
-        return 'Global';
+        return '';
     }
 
     const lowerCased = trimmedValue.toLowerCase();
@@ -53,21 +81,22 @@ const normalizeDependentAssetsPath = (value) => {
     if (lowerCased === 'cdn') {
         return 'CDN';
     }
-    if (lowerCased === 'cn') {
+    if (lowerCased === 'cn' || lowerCased === 'china') {
         return 'CN';
     }
     if (lowerCased === 'local') {
         return 'Local';
     }
 
-    return removeTrailingSlash(trimmedValue);
+    return '';
 };
 
-const SDK_DEPENDENT_ASSETS = normalizeDependentAssetsPath(
-    process.env.ZOOM_SDK_DEPENDENT_ASSETS || process.env.ZOOM_SDK_LIB_URL || '',
-);
+const SDK_DEPENDENT_ASSETS = normalizeDependentAssetsValue(process.env.ZOOM_SDK_DEPENDENT_ASSETS);
+const SDK_CUSTOM_LIB_ROOT = removeTrailingSlash(sanitizeString(process.env.ZOOM_SDK_LIB_URL));
+const SDK_CUSTOM_WASM_PATH = sanitizeString(process.env.ZOOM_SDK_WASM_PATH);
+
 const DEFAULT_SHARE_DIMENSIONS = { width: 960, height: 540 };
-const DEFAULT_LOCAL_ASSET_PATH = './lib';
+const DEFAULT_LOCAL_ASSET_PATH = 'lib';
 
 const createAssetCandidate = (label, dependentAssets, jsLibRoot, wasmPath = '/lib') => ({
     label,
@@ -76,21 +105,21 @@ const createAssetCandidate = (label, dependentAssets, jsLibRoot, wasmPath = '/li
     wasmPath,
 });
 
-const BASE_ZOOM_ASSET_CANDIDATES = [
+const createVersionedCdnCandidates = (version, labelSuffix = '') => [
     createAssetCandidate(
-        'Zoom Global CDN',
+        `Zoom Global CDN${labelSuffix}`,
         'Global',
-        `https://source.zoom.us/videosdk/${SDK_VERSION}/lib`,
+        `https://source.zoom.us/videosdk/${version}/lib`,
     ),
     createAssetCandidate(
-        'Zoom Global CDN (Backup)',
+        `Zoom Global CDN (Backup)${labelSuffix}`,
         'Global',
-        `https://dmogdx0jrul3u.cloudfront.net/videosdk/${SDK_VERSION}/lib`,
+        `https://dmogdx0jrul3u.cloudfront.net/videosdk/${version}/lib`,
     ),
     createAssetCandidate(
-        'Zoom China CDN',
+        `Zoom China CDN${labelSuffix}`,
         'CN',
-        `https://jssdk.zoomus.cn/videosdk/${SDK_VERSION}/lib`,
+        `https://jssdk.zoomus.cn/videosdk/${version}/lib`,
     ),
 ];
 
@@ -98,8 +127,35 @@ const LOCAL_ZOOM_ASSET_CANDIDATE = createAssetCandidate(
     'Bundled local assets',
     'Global',
     DEFAULT_LOCAL_ASSET_PATH,
-    null,
 );
+
+const reorderCandidatesByPreference = (candidates) => {
+    if (!SDK_DEPENDENT_ASSETS || SDK_DEPENDENT_ASSETS === 'Local') {
+        return candidates;
+    }
+
+    const preferred = [];
+    const others = [];
+
+    candidates.forEach((candidate) => {
+        let isPreferred = false;
+        if (SDK_DEPENDENT_ASSETS === 'CDN') {
+            isPreferred = candidate.jsLibRoot.includes('cloudfront.net');
+        } else if (SDK_DEPENDENT_ASSETS === 'Global') {
+            isPreferred = candidate.jsLibRoot.includes('source.zoom.us');
+        } else {
+            isPreferred = candidate.dependentAssets === SDK_DEPENDENT_ASSETS;
+        }
+
+        if (isPreferred) {
+            preferred.push(candidate);
+        } else {
+            others.push(candidate);
+        }
+    });
+
+    return [...preferred, ...others];
+};
 
 const buildZoomAssetCandidates = () => {
     const candidates = [];
@@ -122,36 +178,28 @@ const buildZoomAssetCandidates = () => {
         candidates.push(candidate);
     };
 
-    const envValue = SDK_DEPENDENT_ASSETS;
-
-    if (envValue === 'Global') {
-        const globalCandidate = BASE_ZOOM_ASSET_CANDIDATES.find((item) =>
-            item.jsLibRoot.includes('source.zoom.us'),
+    if (SDK_CUSTOM_LIB_ROOT) {
+        addCandidate(
+            createAssetCandidate(
+                'Env configured custom assets',
+                SDK_DEPENDENT_ASSETS || 'Global',
+                SDK_CUSTOM_LIB_ROOT,
+                SDK_CUSTOM_WASM_PATH || '/lib',
+            ),
         );
-        if (globalCandidate) {
-            addCandidate({ ...globalCandidate, label: 'Env configured Global CDN' });
-        }
-    } else if (envValue === 'CDN') {
-        const cloudfrontCandidate = BASE_ZOOM_ASSET_CANDIDATES.find((item) =>
-            item.jsLibRoot.includes('cloudfront.net'),
-        );
-        if (cloudfrontCandidate) {
-            addCandidate({ ...cloudfrontCandidate, label: 'Env configured Global CDN (CloudFront)' });
-        }
-    } else if (envValue === 'CN') {
-        const chinaCandidate = BASE_ZOOM_ASSET_CANDIDATES.find(
-            (item) => item.dependentAssets === 'CN',
-        );
-        if (chinaCandidate) {
-            addCandidate({ ...chinaCandidate, label: 'Env configured China CDN' });
-        }
-    } else if (envValue === 'Local') {
-        addCandidate({ ...LOCAL_ZOOM_ASSET_CANDIDATE, label: 'Env configured local assets' });
-    } else if (envValue) {
-        addCandidate(createAssetCandidate('Env configured custom assets', 'Global', envValue, null));
     }
 
-    BASE_ZOOM_ASSET_CANDIDATES.forEach(addCandidate);
+    const versionsToTry = collectSdkVersions();
+    versionsToTry.forEach((version) => {
+        const versionLabelSuffix = versionsToTry.length > 1 ? ` (v${version})` : '';
+        const versionedCandidates = createVersionedCdnCandidates(version, versionLabelSuffix);
+        reorderCandidatesByPreference(versionedCandidates).forEach(addCandidate);
+    });
+
+    if (SDK_DEPENDENT_ASSETS === 'Local') {
+        addCandidate({ ...LOCAL_ZOOM_ASSET_CANDIDATE, label: 'Env configured local assets' });
+    }
+
     addCandidate(LOCAL_ZOOM_ASSET_CANDIDATE);
 
     return candidates;
@@ -230,15 +278,27 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
                         }
                     }
 
+                    let preloadErrorToReport = null;
                     if (typeof ZoomVideo.preloadDependentAssets === 'function') {
                         try {
                             await ZoomVideo.preloadDependentAssets();
                         } catch (preloadError) {
+                            preloadErrorToReport =
+                                preloadError instanceof Error
+                                    ? preloadError
+                                    : new Error(
+                                          preloadError?.message ||
+                                              'Unknown error occurred while preloading Zoom SDK assets.',
+                                      );
                             console.warn(
                                 `Failed to preload Zoom SDK dependent assets from ${candidate.label}:`,
-                                preloadError,
+                                preloadErrorToReport,
                             );
                         }
+                    }
+
+                    if (preloadErrorToReport) {
+                        throw preloadErrorToReport;
                     }
 
                     const createdClient = ZoomVideo.createClient();
