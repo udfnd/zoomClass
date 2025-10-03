@@ -58,7 +58,93 @@ const computeConnectSrcAllowlist = () => {
 
 let connectSrcAllowlist = computeConnectSrcAllowlist();
 
-const buildCspHeaderValue = () => `${buildCspString({ connectSrc: Array.from(connectSrcAllowlist) })};`;
+const ZOOM_CDN_HOSTS = [
+  'https://source.zoom.us',
+  'https://*.zoom.us',
+  'https://*.zoomgov.com',
+  'https://dmogdx0jrul3u.cloudfront.net',
+];
+
+const ZOOM_ASSET_HOSTS = [...ZOOM_CDN_HOSTS];
+
+const FONT_HOSTS = ['https://fonts.gstatic.com'];
+const STYLE_HOSTS = ['https://fonts.googleapis.com'];
+
+const uniqueTokens = (values = []) =>
+  Array.from(new Set(values.filter(Boolean)));
+
+const buildCspHeaderValue = () => {
+  const directives = {
+    'default-src': uniqueTokens([
+      "'self'",
+      "'unsafe-inline'",
+      'data:',
+      'blob:',
+      ...ZOOM_ASSET_HOSTS,
+    ]),
+    'script-src': uniqueTokens([
+      "'self'",
+      "'unsafe-eval'",
+      "'unsafe-inline'",
+      'data:',
+      'blob:',
+      ...ZOOM_CDN_HOSTS,
+    ]),
+    'script-src-elem': uniqueTokens([
+      "'self'",
+      "'unsafe-eval'",
+      "'unsafe-inline'",
+      'data:',
+      'blob:',
+      ...ZOOM_CDN_HOSTS,
+    ]),
+    'style-src': uniqueTokens([
+      "'self'",
+      "'unsafe-inline'",
+      ...STYLE_HOSTS,
+      ...ZOOM_ASSET_HOSTS,
+    ]),
+    'style-src-elem': uniqueTokens([
+      "'self'",
+      "'unsafe-inline'",
+      ...STYLE_HOSTS,
+      ...ZOOM_ASSET_HOSTS,
+    ]),
+    'img-src': uniqueTokens([
+      "'self'",
+      'data:',
+      'blob:',
+      ...ZOOM_ASSET_HOSTS,
+    ]),
+    'font-src': uniqueTokens([
+      "'self'",
+      'data:',
+      ...FONT_HOSTS,
+      ...ZOOM_ASSET_HOSTS,
+    ]),
+    'frame-src': uniqueTokens([
+      "'self'",
+      'https://*.zoom.us',
+      'https://*.zoomgov.com',
+    ]),
+    'media-src': uniqueTokens([
+      "'self'",
+      'blob:',
+      'data:',
+    ]),
+    'connect-src': uniqueTokens([
+      ...Array.from(connectSrcAllowlist),
+      'http:',
+      'https:',
+      'ws:',
+      'wss:',
+    ]),
+  };
+
+  return `${Object.entries(directives)
+    .map(([directive, tokens]) => `${directive} ${tokens.join(' ')}`)
+    .join('; ')};`;
+};
 
 const updateOverrideBackendUrl = (value) => {
   overrideBackendUrl = normalizeBackendUrl(value);
