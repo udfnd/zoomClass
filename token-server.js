@@ -2,9 +2,11 @@ require('dotenv').config();
 const express = require('express');
 const crypto = require('crypto');
 const cors = require('cors');
+const os = require('os');
 
 const app = express();
 const port = process.env.PORT || 4000;
+const host = process.env.HOST || '0.0.0.0';
 
 app.use(cors());
 app.use(express.json());
@@ -170,6 +172,21 @@ app.get('/health', (req, res) => {
     res.json({ status: 'ok' });
 });
 
-app.listen(port, () => {
-    console.log(`Token & meeting server listening at http://localhost:${port}`);
+app.listen(port, host, () => {
+    const displayHost = host === '0.0.0.0' ? 'localhost' : host;
+    console.log(`Token & meeting server listening at http://${displayHost}:${port}`);
+
+    const interfaces = os.networkInterfaces();
+    const reachableAddresses = Object.values(interfaces)
+        .flat()
+        .filter((iface) => iface && !iface.internal && iface.family === 'IPv4');
+
+    if (reachableAddresses.length > 0) {
+        console.log('Participants on the same network can connect using:');
+        reachableAddresses.forEach((iface) => {
+            console.log(`  -> http://${iface.address}:${port}`);
+        });
+    } else {
+        console.log('No external IPv4 addresses detected. Ensure your network allows incoming connections.');
+    }
 });

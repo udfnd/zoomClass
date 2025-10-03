@@ -1,8 +1,16 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import ReservationModal from './ReservationModal';
 import CalendarView from './CalendarView';
+import { getBackendLabel, normalizeBackendUrl } from './utils/backend';
 
-function LobbyScreen({ backendUrl, onJoinMeeting }) {
+function LobbyScreen({
+    backendUrl,
+    backendConfigured,
+    defaultBackendUrl,
+    onJoinMeeting,
+    onUpdateBackendUrl,
+    onResetBackendUrl,
+}) {
     const [newSessionName, setNewSessionName] = useState('');
     const [joinSessionName, setJoinSessionName] = useState('');
     const [userName, setUserName] = useState(`User-${Math.floor(Math.random() * 10000)}`);
@@ -13,19 +21,31 @@ function LobbyScreen({ backendUrl, onJoinMeeting }) {
     const [reservationError, setReservationError] = useState('');
     const [currentDate, setCurrentDate] = useState(new Date().toLocaleDateString('ko-KR'));
 
+    const [backendInput, setBackendInput] = useState(backendUrl);
+    const [backendMessage, setBackendMessage] = useState('');
+
+    useEffect(() => {
+        setBackendInput(backendUrl);
+    }, [backendUrl]);
+
+    useEffect(() => {
+        setBackendMessage('');
+    }, [backendUrl]);
+
+    const sanitizedBackendUrl = useMemo(() => normalizeBackendUrl(backendUrl), [backendUrl]);
+
     const backendLabel = useMemo(() => {
         if (!backendUrl) return '구성 필요';
-        return backendUrl.replace(/^https?:\/\//, '').replace(/\/+$, '');
+        return getBackendLabel(backendUrl) || '구성 필요';
     }, [backendUrl]);
 
     const fetchMeetings = useCallback(async (endpoint) => {
-        if (!backendUrl) {
+        if (!sanitizedBackendUrl) {
             throw new Error('Backend URL is not configured.');
         }
 
-        const sanitizedBase = backendUrl.replace(/\/+$, '');
         const normalizedEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
-        const response = await fetch(`${sanitizedBase}${normalizedEndpoint}`);
+        const response = await fetch(`${sanitizedBackendUrl}${normalizedEndpoint}`);
         if (!response.ok) {
             const bodyText = await response.text();
             throw new Error(bodyText || response.statusText);
@@ -37,10 +57,10 @@ function LobbyScreen({ backendUrl, onJoinMeeting }) {
             userName: meeting.host_name,
             startTime: meeting.start_time,
         }));
-    }, [backendUrl]);
+    }, [sanitizedBackendUrl]);
 
     const loadReservations = useCallback(async () => {
-        if (!backendUrl) {
+        if (!sanitizedBackendUrl) {
             return;
         }
         setIsLoadingReservations(true);
@@ -55,10 +75,10 @@ function LobbyScreen({ backendUrl, onJoinMeeting }) {
             setReservations([]);
         }
         setIsLoadingReservations(false);
-    }, [backendUrl, fetchMeetings]);
+    }, [fetchMeetings, sanitizedBackendUrl]);
 
     const loadUpcomingReservations = useCallback(async () => {
-        if (!backendUrl) {
+        if (!sanitizedBackendUrl) {
             return;
         }
         try {
@@ -68,7 +88,7 @@ function LobbyScreen({ backendUrl, onJoinMeeting }) {
             console.error('Failed to load upcoming reservations:', error);
             setUpcomingReservations([]);
         }
-    }, [backendUrl, fetchMeetings]);
+    }, [fetchMeetings, sanitizedBackendUrl]);
 
     useEffect(() => {
         const intervalId = setInterval(() => {
@@ -84,7 +104,7 @@ function LobbyScreen({ backendUrl, onJoinMeeting }) {
             alert('새로운 수업 이름을 입력해주세요.');
             return;
         }
-        if (!backendUrl) {
+        if (!sanitizedBackendUrl) {
             alert('백엔드 URL이 구성되지 않았습니다. 환경 변수를 확인해주세요.');
             return;
         }
@@ -94,8 +114,7 @@ function LobbyScreen({ backendUrl, onJoinMeeting }) {
         const startTime = new Date().toISOString();
 
         try {
-            const sanitizedBase = backendUrl.replace(/\/+$, '');
-            const response = await fetch(`${sanitizedBase}/meetings`, {
+            const response = await fetch(`${sanitizedBackendUrl}/meetings`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -124,7 +143,49 @@ function LobbyScreen({ backendUrl, onJoinMeeting }) {
             alert('참여할 수업 이름을 입력해주세요.');
             return;
         }
+        if (!sanitizedBackendUrl) {
+            alert('백엔드 URL이 구성되지 않았습니다. 먼저 연결 설정을 완료해주세요.');
+            return;
+        }
         onJoinMeeting(joinSessionName.trim(), userName.trim() || `User-${Math.floor(Math.random() * 10000)}`);
+    };
+
+    const handleBackendSubmit = async (event) => {
+        event.preventDefault();
+        const normalized = normalizeBackendUrl(backendInput);
+        if (!normalized) {
+            setBackendMessage('올바른 형식의 주소를 입력해주세요. 예: http://192.168.0.10:4000');
+            return;
+        }
+
+        if (onUpdateBackendUrl) {
+            try {
+                const applied = await onUpdateBackendUrl(normalized);
+                setBackendInput(applied);
+                setBackendMessage('백엔드 주소가 업데이트되었습니다.');
+            } catch (error) {
+                console.error('Failed to update backend URL:', error);
+                setBackendMessage(error.message || '백엔드 주소를 업데이트하지 못했습니다.');
+            }
+        }
+    };
+
+    const handleBackendReset = async () => {
+        if (!onResetBackendUrl) {
+            return;
+        }
+        try {
+            const restored = await onResetBackendUrl();
+            setBackendInput(restored || '');
+            if (!restored) {
+                setBackendMessage('기본 백엔드 주소가 설정되어 있지 않습니다. 수동으로 입력해주세요.');
+            } else {
+                setBackendMessage('기본 백엔드 주소로 복원되었습니다.');
+            }
+        } catch (error) {
+            console.error('Failed to reset backend URL:', error);
+            setBackendMessage('백엔드 주소를 복원하지 못했습니다.');
+        }
     };
 
     const handleOpenReservationModal = () => {
@@ -161,6 +222,47 @@ function LobbyScreen({ backendUrl, onJoinMeeting }) {
                 </div>
             </header>
             <main className="lobby-main">
+                <section className="connection-settings">
+                    <div className="control-card">
+                        <div className="control-card__header">
+                            <h2>백엔드 연결 설정</h2>
+                            <p>
+                                토큰 서버가 실행 중인 컴퓨터의 주소를 입력하면 여러 사람이 같은 회의에 참여할 수 있습니다. 예:{' '}
+                                <code>http://192.168.0.10:4000</code>
+                            </p>
+                        </div>
+                        <form className="form-field" onSubmit={handleBackendSubmit}>
+                            <label htmlFor="backend-url">토큰 서버 주소</label>
+                            <input
+                                id="backend-url"
+                                type="text"
+                                placeholder="http://호스트-IP:4000"
+                                value={backendInput || ''}
+                                onChange={(e) => setBackendInput(e.target.value)}
+                            />
+                            <p className="backend-help-text">
+                                동일한 네트워크의 다른 컴퓨터는 이 주소를 사용해 수업을 생성하고 참여할 수 있습니다.
+                            </p>
+                            <div className="control-card__actions">
+                                <button type="submit" className="btn btn-primary">
+                                    주소 적용
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn btn-outline"
+                                    onClick={handleBackendReset}
+                                    disabled={!defaultBackendUrl}
+                                >
+                                    기본값으로 복원
+                                </button>
+                            </div>
+                            {backendMessage && <p className="backend-status-message">{backendMessage}</p>}
+                            {!backendConfigured && (
+                                <p className="backend-warning">현재 백엔드가 연결되지 않았습니다. 주소를 입력해주세요.</p>
+                            )}
+                        </form>
+                    </div>
+                </section>
                 <section className="session-controls">
                     <div className="control-card">
                         <div className="control-card__header">
@@ -188,7 +290,7 @@ function LobbyScreen({ backendUrl, onJoinMeeting }) {
                             />
                         </div>
                         <div className="control-card__actions">
-                            <button className="btn btn-primary" onClick={handleCreateSession}>
+                            <button className="btn btn-primary" onClick={handleCreateSession} disabled={!backendConfigured}>
                                 수업 생성
                             </button>
                         </div>
@@ -219,7 +321,7 @@ function LobbyScreen({ backendUrl, onJoinMeeting }) {
                             />
                         </div>
                         <div className="control-card__actions">
-                            <button className="btn btn-secondary" onClick={handleJoinSession}>
+                            <button className="btn btn-secondary" onClick={handleJoinSession} disabled={!backendConfigured}>
                                 수업 참여
                             </button>
                         </div>

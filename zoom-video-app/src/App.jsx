@@ -2,6 +2,7 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import LobbyScreen from './LobbyScreen';
 import MeetingScreen from './MeetingScreen';
+import { normalizeBackendUrl } from './utils/backend';
 
 const APP_KEY = process.env.ZOOM_SDK_KEY; // Webpack DefinePlugin을 통해 주입됨
 
@@ -10,12 +11,15 @@ function App() {
     const [sessionName, setSessionName] = useState('');
     const [userName, setUserName] = useState(`User-${Math.floor(Math.random() * 10000)}`); // 임시 사용자 이름
     const [backendUrl, setBackendUrl] = useState('');
+    const [defaultBackendUrl, setDefaultBackendUrl] = useState('');
+    const [isBackendResolved, setIsBackendResolved] = useState(false);
 
     useEffect(() => {
         let isMounted = true;
 
         const resolveBackendUrl = async () => {
-            let resolved = process.env.BACKEND_BASE_URL || '';
+            let resolved = process.env.BACKEND_BASE_URL || process.env.TOKEN_SERVER_URL || '';
+            let override = '';
 
             try {
                 if (window?.electronAPI?.getBackendUrl) {
@@ -27,12 +31,31 @@ function App() {
                 console.error('Failed to resolve backend URL from Electron bridge:', error);
             }
 
-            if (!resolved) {
-                console.warn('Backend URL could not be resolved. Set BACKEND_BASE_URL or TOKEN_SERVER_URL.');
+            const normalizedDefault = normalizeBackendUrl(resolved);
+
+            try {
+                if (window?.electronAPI?.getStoreValue) {
+                    override = await window.electronAPI.getStoreValue('backendUrlOverride', '');
+                }
+            } catch (error) {
+                console.warn('Failed to load backend override from electron-store:', error);
             }
 
+            if (!override) {
+                try {
+                    override = window?.localStorage?.getItem('zoomClass.backendUrl') || '';
+                } catch (error) {
+                    console.warn('Failed to load backend override from localStorage:', error);
+                }
+            }
+
+            const normalizedOverride = normalizeBackendUrl(override);
+            const nextBackend = normalizedOverride || normalizedDefault;
+
             if (isMounted) {
-                setBackendUrl(resolved || '');
+                setDefaultBackendUrl(normalizedDefault);
+                setBackendUrl(nextBackend);
+                setIsBackendResolved(true);
             }
         };
 
@@ -43,7 +66,68 @@ function App() {
         };
     }, []);
 
+    const persistBackendOverride = useCallback(async (value) => {
+        const normalized = normalizeBackendUrl(value);
+        try {
+            if (window?.electronAPI?.setStoreValue) {
+                await window.electronAPI.setStoreValue('backendUrlOverride', normalized);
+            }
+        } catch (error) {
+            console.warn('Failed to persist backend override to electron-store:', error);
+        }
+
+        try {
+            if (normalized) {
+                window?.localStorage?.setItem('zoomClass.backendUrl', normalized);
+            } else {
+                window?.localStorage?.removeItem('zoomClass.backendUrl');
+            }
+        } catch (error) {
+            console.warn('Failed to persist backend override to localStorage:', error);
+        }
+    }, []);
+
+    const clearBackendOverride = useCallback(async () => {
+        try {
+            if (window?.electronAPI?.deleteStoreValue) {
+                await window.electronAPI.deleteStoreValue('backendUrlOverride');
+            }
+        } catch (error) {
+            console.warn('Failed to remove backend override from electron-store:', error);
+        }
+
+        try {
+            window?.localStorage?.removeItem('zoomClass.backendUrl');
+        } catch (error) {
+            console.warn('Failed to remove backend override from localStorage:', error);
+        }
+    }, []);
+
+    const updateBackendUrl = useCallback(
+        async (nextUrl) => {
+            const normalized = normalizeBackendUrl(nextUrl);
+            if (!normalized) {
+                throw new Error('유효한 백엔드 주소가 필요합니다.');
+            }
+
+            setBackendUrl(normalized);
+            await persistBackendOverride(normalized);
+            return normalized;
+        },
+        [persistBackendOverride],
+    );
+
+    const resetBackendUrl = useCallback(async () => {
+        await clearBackendOverride();
+        setBackendUrl(defaultBackendUrl);
+        return defaultBackendUrl;
+    }, [clearBackendOverride, defaultBackendUrl]);
+
     const joinMeeting = useCallback((name, user) => {
+        if (!backendUrl) {
+            alert('백엔드 서버 주소가 구성되지 않았습니다. 먼저 연결 설정을 완료해주세요.');
+            return;
+        }
         if (!name || !user) {
             alert('세션 이름과 사용자 이름을 입력해주세요.');
             return;
@@ -51,7 +135,7 @@ function App() {
         setSessionName(name);
         setUserName(user);
         setIsInMeeting(true);
-    }, []);
+    }, [backendUrl]);
 
     const leaveMeeting = useCallback(async () => {
         setIsInMeeting(false);
@@ -70,7 +154,7 @@ function App() {
         );
     }
 
-    if (!backendUrl) {
+    if (!isBackendResolved) {
         return (
             <div className="app-status-card">
                 <div className="loader" aria-hidden="true" />
@@ -83,10 +167,19 @@ function App() {
         );
     }
 
+    const isBackendConfigured = Boolean(normalizeBackendUrl(backendUrl));
+
     return (
         <div className="app-container">
             {!isInMeeting ? (
-                <LobbyScreen backendUrl={backendUrl} onJoinMeeting={joinMeeting} />
+                <LobbyScreen
+                    backendUrl={backendUrl}
+                    backendConfigured={isBackendConfigured}
+                    defaultBackendUrl={defaultBackendUrl}
+                    onJoinMeeting={joinMeeting}
+                    onUpdateBackendUrl={updateBackendUrl}
+                    onResetBackendUrl={resetBackendUrl}
+                />
             ) : (
                 <MeetingScreen
                     sessionName={sessionName}
