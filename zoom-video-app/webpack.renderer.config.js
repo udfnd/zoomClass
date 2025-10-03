@@ -87,6 +87,12 @@ module.exports = {
         {
           from: path.resolve(__dirname, 'node_modules/@zoom/videosdk/dist/lib'),
           to: 'lib',
+          noErrorOnMissing: true,
+        },
+        {
+          from: path.resolve(__dirname, 'node_modules/@zoom/videosdk/dist/lib'),
+          to: path.posix.join('main_window', 'lib'),
+          noErrorOnMissing: true,
         },
       ],
     }),

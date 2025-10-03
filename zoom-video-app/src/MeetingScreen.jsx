@@ -141,9 +141,17 @@ const resolveCandidateForRuntime = (candidate) => {
         return candidate;
     }
 
-    const resolvedRoot = resolveJsLibRootForRuntime(candidate.jsLibRoot);
-    const resolvedWasmPath =
+    let resolvedRoot = resolveJsLibRootForRuntime(candidate.jsLibRoot);
+    let resolvedWasmPath =
         candidate.wasmPath === null ? null : ensureLeadingSlash(candidate.wasmPath || '/lib');
+
+    if (candidate.isLocal) {
+        const localRoot = resolveLocalLibRoot(candidate.jsLibRoot);
+        resolvedRoot = removeTrailingSlash(localRoot);
+        if (resolvedWasmPath !== null) {
+            resolvedWasmPath = ensureLeadingSlash(candidate.wasmPath || localRoot);
+        }
+    }
 
     return {
         ...candidate,
@@ -195,11 +203,18 @@ const describeCompatibilityIssues = (compatibility) => {
     return unsupported.join(', ');
 };
 
-const createAssetCandidate = (label, dependentAssets, jsLibRoot, wasmPath = '/lib') => ({
+const createAssetCandidate = (
+    label,
+    dependentAssets,
+    jsLibRoot,
+    wasmPath = '/lib',
+    options = {},
+) => ({
     label,
     dependentAssets,
     jsLibRoot: removeTrailingSlash(jsLibRoot),
     wasmPath,
+    ...options,
 });
 
 const createVersionedCdnCandidates = (version, labelSuffix = '') => [
@@ -224,7 +239,125 @@ const LOCAL_ZOOM_ASSET_CANDIDATE = createAssetCandidate(
     'Bundled local assets',
     'Global',
     DEFAULT_LOCAL_ASSET_PATH,
+    '/lib',
+    { isLocal: true },
 );
+
+const isRunningInElectron = () => {
+    if (typeof window === 'undefined') {
+        return false;
+    }
+
+    try {
+        return Boolean(window?.process?.versions?.electron);
+    } catch (error) {
+        console.warn('Failed to detect Electron environment:', error);
+        return false;
+    }
+};
+
+const getCspDirectiveValue = (directive) => {
+    if (typeof document === 'undefined') {
+        return '';
+    }
+
+    try {
+        const meta = document.querySelector('meta[http-equiv="Content-Security-Policy"]');
+        const content = sanitizeString(meta?.getAttribute('content'));
+        if (!content) {
+            return '';
+        }
+
+        const lowerDirective = sanitizeString(directive).toLowerCase();
+        if (!lowerDirective) {
+            return '';
+        }
+
+        const directives = content
+            .split(';')
+            .map((value) => sanitizeString(value))
+            .filter(Boolean);
+
+        const matched = directives.find((entry) =>
+            entry.toLowerCase().startsWith(`${lowerDirective} `),
+        );
+
+        return matched || '';
+    } catch (error) {
+        console.warn('Failed to inspect Content Security Policy meta tag:', error);
+        return '';
+    }
+};
+
+const shouldPrioritizeLocalAssets = () => {
+    if (SDK_DEPENDENT_ASSETS === 'Local') {
+        return true;
+    }
+
+    if (isRunningInElectron()) {
+        return true;
+    }
+
+    const scriptSrcDirective = getCspDirectiveValue('script-src');
+    if (!scriptSrcDirective) {
+        return false;
+    }
+
+    const sources = scriptSrcDirective
+        .split(/\s+/)
+        .map((value) => sanitizeString(value))
+        .filter(Boolean)
+        .slice(1);
+
+    if (sources.length === 0) {
+        return false;
+    }
+
+    const allowsRemote = sources.some((value) => {
+        if (value === '*' || value === 'https:' || value === 'data:' || value === 'blob:') {
+            return true;
+        }
+
+        return /zoom(us|gov)?\.cn|zoom(us|gov)?\.com|zoom\.us|zoomgov\.com|https:\/\//i.test(value);
+    });
+
+    return !allowsRemote;
+};
+
+const resolveLocalLibRoot = (root) => {
+    const sanitizedRoot = sanitizeString(root) || DEFAULT_LOCAL_ASSET_PATH;
+
+    if (typeof window === 'undefined') {
+        return removeTrailingSlash(sanitizedRoot);
+    }
+
+    const normalizedRoot = sanitizedRoot.replace(/^\/+/, '');
+
+    try {
+        if (window.location.protocol === 'file:') {
+            const resolvedUrl = new URL(normalizedRoot || '.', window.location.href);
+            return removeTrailingSlash(resolvedUrl.toString());
+        }
+
+        const currentPath = sanitizeString(window.location.pathname) || '';
+        const cleanedPath = currentPath.replace(/\\+/g, '/');
+        const segments = cleanedPath
+            .split('/')
+            .map((value) => sanitizeString(value))
+            .filter(Boolean);
+
+        if (segments.length > 0 && segments[segments.length - 1]?.includes('.')) {
+            segments.pop();
+        }
+
+        const basePath = segments.length > 0 ? `/${segments.join('/')}` : '';
+        const combinedPath = `${basePath ? `${basePath}/` : '/'}${normalizedRoot}`;
+        return removeTrailingSlash(combinedPath);
+    } catch (error) {
+        console.warn('Failed to resolve local Zoom SDK asset root:', error);
+        return removeTrailingSlash(sanitizedRoot);
+    }
+};
 
 const reorderCandidatesByPreference = (candidates) => {
     if (!SDK_DEPENDENT_ASSETS || SDK_DEPENDENT_ASSETS === 'Local') {
@@ -275,6 +408,12 @@ const buildZoomAssetCandidates = () => {
         candidates.push(candidate);
     };
 
+    const prioritizeLocal = shouldPrioritizeLocalAssets();
+
+    if (prioritizeLocal) {
+        addCandidate({ ...LOCAL_ZOOM_ASSET_CANDIDATE });
+    }
+
     if (SDK_CUSTOM_LIB_ROOT) {
         addCandidate(
             createAssetCandidate(
@@ -297,7 +436,9 @@ const buildZoomAssetCandidates = () => {
         addCandidate({ ...LOCAL_ZOOM_ASSET_CANDIDATE, label: 'Env configured local assets' });
     }
 
-    addCandidate(LOCAL_ZOOM_ASSET_CANDIDATE);
+    if (!prioritizeLocal) {
+        addCandidate(LOCAL_ZOOM_ASSET_CANDIDATE);
+    }
 
     return candidates;
 };
