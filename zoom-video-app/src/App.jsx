@@ -123,19 +123,26 @@ function App() {
         return defaultBackendUrl;
     }, [clearBackendOverride, defaultBackendUrl]);
 
-    const joinMeeting = useCallback((name, user) => {
-        if (!backendUrl) {
-            alert('백엔드 서버 주소가 구성되지 않았습니다. 먼저 연결 설정을 완료해주세요.');
-            return;
-        }
-        if (!name || !user) {
-            alert('세션 이름과 사용자 이름을 입력해주세요.');
-            return;
-        }
-        setSessionName(name);
-        setUserName(user);
-        setIsInMeeting(true);
-    }, [backendUrl]);
+    const joinMeeting = useCallback(
+        (name, user, backendOverride) => {
+            const normalizedOverride = normalizeBackendUrl(backendOverride);
+            const effectiveBackend = normalizedOverride || backendUrl;
+
+            if (!effectiveBackend) {
+                alert('백엔드 서버 주소가 구성되지 않았습니다. 먼저 연결 설정을 완료해주세요.');
+                return;
+            }
+            if (!name || !user) {
+                alert('세션 이름과 사용자 이름을 입력해주세요.');
+                return;
+            }
+
+            setSessionName(name);
+            setUserName(user);
+            setIsInMeeting(true);
+        },
+        [backendUrl],
+    );
 
     const leaveMeeting = useCallback(async () => {
         setIsInMeeting(false);

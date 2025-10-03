@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import ZoomVideo, { SharePrivilege, VideoQuality } from '@zoom/videosdk';
 import { normalizeBackendUrl } from './utils/backend';
 
@@ -18,6 +18,19 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
     const [remoteUsers, setRemoteUsers] = useState([]);
     const [isSharing, setIsSharing] = useState(false);
     const [activeShareUserId, setActiveShareUserId] = useState(null);
+    const [copyStatus, setCopyStatus] = useState('');
+    const [copyStatusTone, setCopyStatusTone] = useState('success');
+
+    const sanitizedBackendUrl = useMemo(() => normalizeBackendUrl(backendUrl), [backendUrl]);
+
+    const shareableLink = useMemo(() => {
+        if (!sanitizedBackendUrl || !sessionName) {
+            return '';
+        }
+
+        const query = new URLSearchParams({ sessionName }).toString();
+        return `${sanitizedBackendUrl}/join?${query}`;
+    }, [sanitizedBackendUrl, sessionName]);
 
     const initClient = useCallback(async () => {
         if (!APP_KEY) {
@@ -34,6 +47,9 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
 
         try {
             console.log('Initializing Zoom SDK...');
+            ZoomVideo.setZoomJSLib(SDK_LIB_URL, '/lib');
+            await ZoomVideo.preLoadWasm();
+            await ZoomVideo.prepareWebSDK();
             client.current = ZoomVideo.createClient();
             await client.current.init('en-US', SDK_LIB_URL, { patchJsMedia: true });
             console.log('Zoom SDK initialized successfully.');
@@ -54,9 +70,7 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
             console.log('Already joined the session.');
             return;
         }
-        const sanitizedBase = normalizeBackendUrl(backendUrl);
-
-        if (!sanitizedBase) {
+        if (!sanitizedBackendUrl) {
             alert('토큰 서버 주소를 찾을 수 없습니다. BACKEND_BASE_URL 구성을 확인해주세요.');
             onLeaveMeeting();
             return;
@@ -69,7 +83,7 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
                 userId: userName,
             }).toString();
 
-            const tokenEndpoint = `${sanitizedBase}/generate-token?${queryParams}`;
+            const tokenEndpoint = `${sanitizedBackendUrl}/generate-token?${queryParams}`;
             const response = await fetch(tokenEndpoint, { method: 'GET' });
 
             if (!response.ok) {
@@ -129,7 +143,39 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
             alert(`세션 참여에 실패했습니다: ${error.message}`);
             onLeaveMeeting();
         }
-    }, [backendUrl, client, isClientInited, isJoined, sessionName, userName, onLeaveMeeting]);
+    }, [sanitizedBackendUrl, client, isClientInited, isJoined, sessionName, userName, onLeaveMeeting]);
+
+    const handleCopyLink = useCallback(async () => {
+        if (!shareableLink) {
+            return;
+        }
+
+        try {
+            if (navigator?.clipboard?.writeText) {
+                await navigator.clipboard.writeText(shareableLink);
+            } else {
+                const helper = document.createElement('textarea');
+                helper.value = shareableLink;
+                helper.setAttribute('readonly', '');
+                helper.style.position = 'fixed';
+                helper.style.left = '-9999px';
+                document.body.appendChild(helper);
+                helper.focus();
+                helper.select();
+                const success = document.execCommand('copy');
+                document.body.removeChild(helper);
+                if (!success) {
+                    throw new Error('Copy command was not successful');
+                }
+            }
+            setCopyStatusTone('success');
+            setCopyStatus('링크가 복사되었습니다. 참가자에게 전달해주세요.');
+        } catch (error) {
+            console.error('Failed to copy share link:', error);
+            setCopyStatusTone('error');
+            setCopyStatus('클립보드 복사에 실패했습니다. 링크를 직접 선택해 복사해주세요.');
+        }
+    }, [shareableLink]);
 
     useEffect(() => {
         initClient();
@@ -140,6 +186,21 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
             joinSession();
         }
     }, [isClientInited, sessionName, userName, isJoined, joinSession]);
+
+    useEffect(() => {
+        if (!copyStatus) {
+            return;
+        }
+        const timeoutId = setTimeout(() => {
+            setCopyStatus('');
+        }, 4000);
+        return () => clearTimeout(timeoutId);
+    }, [copyStatus]);
+
+    useEffect(() => {
+        setCopyStatus('');
+        setCopyStatusTone('success');
+    }, [shareableLink]);
 
     const cleanupRemoteVideos = useCallback(async () => {
         if (!currentStream) {
@@ -607,6 +668,32 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
                     {activeShareUserName && <span className="badge badge-share">화면 공유: {activeShareUserName}</span>}
                 </div>
             </header>
+            {shareableLink && (
+                <section className="share-link-panel" aria-label="수업 공유 링크">
+                    <h2 className="section-title">참여 링크 공유</h2>
+                    <div className="share-link-input">
+                        <input
+                            type="text"
+                            value={shareableLink}
+                            readOnly
+                            onFocus={(event) => event.target.select()}
+                            onClick={(event) => event.currentTarget.select()}
+                            aria-label="현재 수업 참여 링크"
+                        />
+                        <button type="button" className="btn btn-outline" onClick={handleCopyLink} disabled={!shareableLink}>
+                            링크 복사
+                        </button>
+                    </div>
+                    <p className="share-link-description">
+                        링크를 복사해 참가자에게 전달하거나, 로비 화면의 ‘수업 참여’ 입력란에 붙여넣으면 바로 참여할 수 있습니다.
+                    </p>
+                    {copyStatus && (
+                        <p className={`share-link-status share-link-status--${copyStatusTone}`} role="status">
+                            {copyStatus}
+                        </p>
+                    )}
+                </section>
+            )}
             <div className="meeting-content">
                 <section className="video-section">
                     <h2 className="section-title">참가자 비디오</h2>
