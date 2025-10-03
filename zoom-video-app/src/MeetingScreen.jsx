@@ -56,6 +56,9 @@ const normalizeDependentAssetsPath = (value) => {
     if (lowerCased === 'cn') {
         return 'CN';
     }
+    if (lowerCased === 'local') {
+        return 'Local';
+    }
 
     return removeTrailingSlash(trimmedValue);
 };
@@ -63,35 +66,96 @@ const normalizeDependentAssetsPath = (value) => {
 const SDK_DEPENDENT_ASSETS = normalizeDependentAssetsPath(
     process.env.ZOOM_SDK_DEPENDENT_ASSETS || process.env.ZOOM_SDK_LIB_URL || '',
 );
-const resolveZoomJSLibConfiguration = () => {
-    switch (SDK_DEPENDENT_ASSETS) {
-        case 'CDN':
-            return {
-                dependentAssets: 'CDN',
-                jsLibRoot: `https://dmogdx0jrul3u.cloudfront.net/videosdk/${SDK_VERSION}/lib`,
-                wasmPath: '/lib',
-            };
-        case 'Global':
-            return {
-                dependentAssets: 'Global',
-                jsLibRoot: `https://source.zoom.us/videosdk/${SDK_VERSION}/lib`,
-                wasmPath: '/lib',
-            };
-        case 'CN':
-            return {
-                dependentAssets: 'CN',
-                jsLibRoot: `https://jssdk.zoomus.cn/videosdk/${SDK_VERSION}/lib`,
-                wasmPath: '/lib',
-            };
-        default:
-            return {
-                dependentAssets: SDK_DEPENDENT_ASSETS,
-                jsLibRoot: SDK_DEPENDENT_ASSETS,
-                wasmPath: '',
-            };
-    }
-};
 const DEFAULT_SHARE_DIMENSIONS = { width: 960, height: 540 };
+const DEFAULT_LOCAL_ASSET_PATH = './lib';
+
+const createAssetCandidate = (label, dependentAssets, jsLibRoot, wasmPath = '/lib') => ({
+    label,
+    dependentAssets,
+    jsLibRoot: removeTrailingSlash(jsLibRoot),
+    wasmPath,
+});
+
+const BASE_ZOOM_ASSET_CANDIDATES = [
+    createAssetCandidate(
+        'Zoom Global CDN',
+        'Global',
+        `https://source.zoom.us/videosdk/${SDK_VERSION}/lib`,
+    ),
+    createAssetCandidate(
+        'Zoom Global CDN (Backup)',
+        'Global',
+        `https://dmogdx0jrul3u.cloudfront.net/videosdk/${SDK_VERSION}/lib`,
+    ),
+    createAssetCandidate(
+        'Zoom China CDN',
+        'CN',
+        `https://jssdk.zoomus.cn/videosdk/${SDK_VERSION}/lib`,
+    ),
+];
+
+const LOCAL_ZOOM_ASSET_CANDIDATE = createAssetCandidate(
+    'Bundled local assets',
+    'Global',
+    DEFAULT_LOCAL_ASSET_PATH,
+    null,
+);
+
+const buildZoomAssetCandidates = () => {
+    const candidates = [];
+    const seen = new Set();
+
+    const addCandidate = (candidate) => {
+        if (!candidate || !candidate.jsLibRoot) {
+            return;
+        }
+
+        const key = `${candidate.dependentAssets || 'Global'}|${candidate.jsLibRoot}|${
+            candidate.wasmPath ?? 'null'
+        }`;
+
+        if (seen.has(key)) {
+            return;
+        }
+
+        seen.add(key);
+        candidates.push(candidate);
+    };
+
+    const envValue = SDK_DEPENDENT_ASSETS;
+
+    if (envValue === 'Global') {
+        const globalCandidate = BASE_ZOOM_ASSET_CANDIDATES.find((item) =>
+            item.jsLibRoot.includes('source.zoom.us'),
+        );
+        if (globalCandidate) {
+            addCandidate({ ...globalCandidate, label: 'Env configured Global CDN' });
+        }
+    } else if (envValue === 'CDN') {
+        const cloudfrontCandidate = BASE_ZOOM_ASSET_CANDIDATES.find((item) =>
+            item.jsLibRoot.includes('cloudfront.net'),
+        );
+        if (cloudfrontCandidate) {
+            addCandidate({ ...cloudfrontCandidate, label: 'Env configured Global CDN (CloudFront)' });
+        }
+    } else if (envValue === 'CN') {
+        const chinaCandidate = BASE_ZOOM_ASSET_CANDIDATES.find(
+            (item) => item.dependentAssets === 'CN',
+        );
+        if (chinaCandidate) {
+            addCandidate({ ...chinaCandidate, label: 'Env configured China CDN' });
+        }
+    } else if (envValue === 'Local') {
+        addCandidate({ ...LOCAL_ZOOM_ASSET_CANDIDATE, label: 'Env configured local assets' });
+    } else if (envValue) {
+        addCandidate(createAssetCandidate('Env configured custom assets', 'Global', envValue, null));
+    }
+
+    BASE_ZOOM_ASSET_CANDIDATES.forEach(addCandidate);
+    addCandidate(LOCAL_ZOOM_ASSET_CANDIDATE);
+
+    return candidates;
+};
 
 function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
     const videoRef = useRef(null);
@@ -109,6 +173,7 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
     const [copyStatusTone, setCopyStatusTone] = useState('success');
 
     const sanitizedBackendUrl = useMemo(() => normalizeBackendUrl(backendUrl), [backendUrl]);
+    const assetCandidates = useMemo(buildZoomAssetCandidates, []);
 
     const shareableLink = useMemo(() => {
         if (!sanitizedBackendUrl || !sessionName) {
@@ -132,33 +197,90 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
             return;
         }
 
+        let lastError = null;
+
         try {
             console.log('Initializing Zoom SDK...');
-            const { dependentAssets, jsLibRoot, wasmPath } = resolveZoomJSLibConfiguration();
+            setIsClientInited(false);
 
-            if (typeof ZoomVideo.setZoomJSLib === 'function') {
-                if (wasmPath) {
-                    ZoomVideo.setZoomJSLib(jsLibRoot, wasmPath);
-                } else {
-                    ZoomVideo.setZoomJSLib(jsLibRoot);
-                }
-            }
-
-            if (typeof ZoomVideo.preloadDependentAssets === 'function') {
+            for (const candidate of assetCandidates) {
                 try {
-                    await ZoomVideo.preloadDependentAssets(jsLibRoot);
-                } catch (preloadError) {
-                    console.warn('Failed to preload Zoom SDK dependent assets:', preloadError);
+                    const dependentAssetsValue = candidate.dependentAssets || 'Global';
+                    console.log(
+                        `Attempting Zoom SDK initialization using ${candidate.label} (${candidate.jsLibRoot}) with dependentAssets=${dependentAssetsValue}.`,
+                    );
+                    if (typeof ZoomVideo.destroyClient === 'function') {
+                        try {
+                            await ZoomVideo.destroyClient();
+                        } catch (destroyBeforeInitError) {
+                            console.warn(
+                                'Failed to destroy existing Zoom SDK client before init attempt:',
+                                destroyBeforeInitError,
+                            );
+                        }
+                    }
+
+                    if (typeof ZoomVideo.setZoomJSLib === 'function') {
+                        if (candidate.wasmPath === null) {
+                            ZoomVideo.setZoomJSLib(candidate.jsLibRoot);
+                        } else if (candidate.wasmPath) {
+                            ZoomVideo.setZoomJSLib(candidate.jsLibRoot, candidate.wasmPath);
+                        } else {
+                            ZoomVideo.setZoomJSLib(candidate.jsLibRoot);
+                        }
+                    }
+
+                    if (typeof ZoomVideo.preloadDependentAssets === 'function') {
+                        try {
+                            await ZoomVideo.preloadDependentAssets();
+                        } catch (preloadError) {
+                            console.warn(
+                                `Failed to preload Zoom SDK dependent assets from ${candidate.label}:`,
+                                preloadError,
+                            );
+                        }
+                    }
+
+                    const createdClient = ZoomVideo.createClient();
+                    const initResult = await createdClient.init('en-US', dependentAssetsValue, {
+                        patchJsMedia: true,
+                    });
+
+                    if (initResult && typeof initResult === 'object') {
+                        throw new Error(initResult.reason || 'Failed to initialize Zoom SDK');
+                    }
+
+                    client.current = createdClient;
+                    console.log(
+                        `Zoom SDK initialized successfully using ${candidate.label} (${candidate.jsLibRoot}).`,
+                    );
+                    setIsClientInited(true);
+                    return;
+                } catch (candidateError) {
+                    lastError = candidateError;
+                    console.error(
+                        `Zoom SDK initialization failed for ${candidate.label} (${candidate.jsLibRoot}):`,
+                        candidateError,
+                    );
+                    if (typeof ZoomVideo.destroyClient === 'function') {
+                        try {
+                            await ZoomVideo.destroyClient();
+                        } catch (destroyError) {
+                            console.warn(
+                                'Failed to destroy Zoom SDK client after candidate failure:',
+                                destroyError,
+                            );
+                        }
+                    }
+                    client.current = null;
                 }
             }
-            const createdClient = ZoomVideo.createClient();
-            client.current = createdClient;
-            const initResult = await createdClient.init('en-US', dependentAssets, { patchJsMedia: true });
-            if (initResult && typeof initResult === 'object') {
-                throw new Error(initResult.reason || 'Failed to initialize Zoom SDK');
+
+            if (lastError) {
+                throw lastError;
             }
-            console.log('Zoom SDK initialized successfully.');
-            setIsClientInited(true);
+
+            throw new Error('Failed to initialize Zoom SDK with any configured asset sources.');
         } catch (error) {
             console.error('Error initializing Zoom SDK:', error);
             if (typeof ZoomVideo.destroyClient === 'function') {
@@ -172,7 +294,7 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
             alert('Zoom SDK 초기화에 실패했습니다: ' + error.message);
             onLeaveMeeting();
         }
-    }, [onLeaveMeeting]);
+    }, [assetCandidates, onLeaveMeeting]);
 
     const joinSession = useCallback(async () => {
         if (!client.current || !isClientInited) {

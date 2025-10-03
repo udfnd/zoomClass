@@ -1,6 +1,7 @@
 // zoom-video-app/webpack.renderer.config.js
 const path = require('path');
 const webpack = require('webpack');
+const CopyWebpackPlugin = require('copy-webpack-plugin');
 
 require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 
@@ -81,5 +82,13 @@ module.exports = {
         /^events$/, // 'events' 모듈을 정확히 일치시킴
         require.resolve('events/') // 브라우저용 'events' 폴리필로 대체
     ),
+    new CopyWebpackPlugin({
+      patterns: [
+        {
+          from: path.resolve(__dirname, 'node_modules/@zoom/videosdk/dist/lib'),
+          to: 'lib',
+        },
+      ],
+    }),
   ],
 };
