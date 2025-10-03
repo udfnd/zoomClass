@@ -67,6 +67,16 @@ const ZOOM_CDN_HOSTS = [
 
 const ZOOM_ASSET_HOSTS = [...ZOOM_CDN_HOSTS];
 
+const ZOOM_REQUEST_PATTERNS = [
+  '*://source.zoom.us/*',
+  '*://*.zoom.us/sdk/*',
+  '*://*.zoom.us/meetingsdk/*',
+  '*://dmogdx0jrul3u.cloudfront.net/*',
+];
+
+const ZOOM_ORIGIN = 'https://source.zoom.us';
+const ZOOM_REFERER = `${ZOOM_ORIGIN}/`;
+
 const FONT_HOSTS = ['https://fonts.gstatic.com'];
 const STYLE_HOSTS = ['https://fonts.googleapis.com'];
 
@@ -193,6 +203,26 @@ const installCspAllowlist = () => {
   });
 };
 
+const installZoomRequestHardening = () => {
+  const activeSession = session.defaultSession;
+  if (!activeSession) {
+    return;
+  }
+
+  activeSession.webRequest.onBeforeSendHeaders(
+    { urls: ZOOM_REQUEST_PATTERNS },
+    (details, callback) => {
+      const headers = { ...details.requestHeaders };
+      headers.Origin = ZOOM_ORIGIN;
+      headers.Referer = ZOOM_REFERER;
+      if (headers.Pragma) {
+        delete headers.Pragma;
+      }
+      callback({ requestHeaders: headers });
+    },
+  );
+};
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1280,
@@ -221,6 +251,7 @@ app.whenReady().then(() => {
   }
 
   installCspAllowlist();
+  installZoomRequestHardening();
   createWindow();
 
   app.on('activate', () => {

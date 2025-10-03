@@ -96,6 +96,7 @@ function appendScript(src) {
         script.dataset.zoomSdk = src;
         script.async = true;
         script.crossOrigin = 'anonymous';
+        script.referrerPolicy = 'no-referrer';
         script.onload = () => {
             script.dataset.loaded = 'true';
             resolve(script);
