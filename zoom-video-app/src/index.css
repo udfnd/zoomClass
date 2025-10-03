@@ -237,6 +237,13 @@ body {
   gap: 28px;
 }
 
+.connection-settings {
+  grid-column: span 2;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
 .session-controls {
   display: grid;
   grid-template-columns: 1fr;
@@ -294,6 +301,28 @@ body {
 .control-card__actions {
   display: flex;
   justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.backend-help-text {
+  margin: 8px 0 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--color-text-muted);
+}
+
+.backend-status-message {
+  margin: 12px 0 0;
+  font-size: 14px;
+  color: var(--color-secondary-dark);
+}
+
+.backend-warning {
+  margin: 8px 0 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-danger);
 }
 
 .schedule-info {
@@ -707,6 +736,10 @@ body {
 @media (max-width: 1080px) {
   .lobby-main {
     grid-template-columns: 1fr;
+  }
+
+  .connection-settings {
+    grid-column: 1;
   }
 
   .lobby-header {

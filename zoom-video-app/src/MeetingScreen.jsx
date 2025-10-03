@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import ZoomVideo from '@zoom/videosdk';
+import { normalizeBackendUrl } from './utils/backend';
 
 const APP_KEY = process.env.ZOOM_SDK_KEY;
 
@@ -49,7 +50,9 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
             console.log('Already joined the session.');
             return;
         }
-        if (!backendUrl) {
+        const sanitizedBase = normalizeBackendUrl(backendUrl);
+
+        if (!sanitizedBase) {
             alert('토큰 서버 주소를 찾을 수 없습니다. BACKEND_BASE_URL 구성을 확인해주세요.');
             onLeaveMeeting();
             return;
@@ -57,7 +60,6 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
 
         console.log(`Joining session: ${sessionName} as ${userName}`);
         try {
-            const sanitizedBase = backendUrl.replace(/\/+$, '');
             const queryParams = new URLSearchParams({
                 sessionName: sessionName,
                 userId: userName,
