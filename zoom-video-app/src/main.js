@@ -57,47 +57,97 @@ const computeConnectSrcAllowlist = () => {
 
 let connectSrcAllowlist = computeConnectSrcAllowlist();
 
+const ZOOM_CDN_HOSTS = [
+  'https://source.zoom.us',
+  'https://*.zoom.us',
+  'https://*.zoomgov.com',
+  'https://dmogdx0jrul3u.cloudfront.net',
+];
+
+const ZOOM_ASSET_HOSTS = [...ZOOM_CDN_HOSTS];
+
+const FONT_HOSTS = ['https://fonts.gstatic.com'];
+const STYLE_HOSTS = ['https://fonts.googleapis.com'];
+
+const uniqueTokens = (values = []) =>
+  Array.from(new Set(values.filter(Boolean)));
+
+const buildCspHeaderValue = () => {
+  const directives = {
+    'default-src': uniqueTokens([
+      "'self'",
+      "'unsafe-inline'",
+      'data:',
+      'blob:',
+      ...ZOOM_ASSET_HOSTS,
+    ]),
+    'script-src': uniqueTokens([
+      "'self'",
+      "'unsafe-eval'",
+      "'unsafe-inline'",
+      'data:',
+      'blob:',
+      ...ZOOM_CDN_HOSTS,
+    ]),
+    'script-src-elem': uniqueTokens([
+      "'self'",
+      "'unsafe-eval'",
+      "'unsafe-inline'",
+      'data:',
+      'blob:',
+      ...ZOOM_CDN_HOSTS,
+    ]),
+    'style-src': uniqueTokens([
+      "'self'",
+      "'unsafe-inline'",
+      ...STYLE_HOSTS,
+      ...ZOOM_ASSET_HOSTS,
+    ]),
+    'style-src-elem': uniqueTokens([
+      "'self'",
+      "'unsafe-inline'",
+      ...STYLE_HOSTS,
+      ...ZOOM_ASSET_HOSTS,
+    ]),
+    'img-src': uniqueTokens([
+      "'self'",
+      'data:',
+      'blob:',
+      ...ZOOM_ASSET_HOSTS,
+    ]),
+    'font-src': uniqueTokens([
+      "'self'",
+      'data:',
+      ...FONT_HOSTS,
+      ...ZOOM_ASSET_HOSTS,
+    ]),
+    'frame-src': uniqueTokens([
+      "'self'",
+      'https://*.zoom.us',
+      'https://*.zoomgov.com',
+    ]),
+    'media-src': uniqueTokens([
+      "'self'",
+      'blob:',
+      'data:',
+    ]),
+    'connect-src': uniqueTokens([
+      ...Array.from(connectSrcAllowlist),
+      'http:',
+      'https:',
+      'ws:',
+      'wss:',
+    ]),
+  };
+
+  return `${Object.entries(directives)
+    .map(([directive, tokens]) => `${directive} ${tokens.join(' ')}`)
+    .join('; ')};`;
+};
+
 const updateOverrideBackendUrl = (value) => {
   overrideBackendUrl = normalizeBackendUrl(value);
   connectSrcAllowlist = computeConnectSrcAllowlist();
-};
-
-const mergeConnectSrcDirective = (headerValue, sources) => {
-  const normalizedSources = Array.from(new Set((sources || []).filter(Boolean)));
-  if (normalizedSources.length === 0) {
-    return headerValue || '';
-  }
-
-  if (!headerValue) {
-    return `connect-src ${normalizedSources.join(' ')};`;
-  }
-
-  const directives = headerValue
-    .split(';')
-    .map((directive) => directive.trim())
-    .filter(Boolean);
-
-  let replaced = false;
-  const updatedDirectives = directives.map((directive) => {
-    if (!directive.toLowerCase().startsWith('connect-src')) {
-      return directive;
-    }
-
-    replaced = true;
-    const existingTokens = directive
-      .slice('connect-src'.length)
-      .trim()
-      .split(/\s+/)
-      .filter(Boolean);
-    const merged = new Set([...existingTokens, ...normalizedSources]);
-    return `connect-src ${Array.from(merged).join(' ')}`;
-  });
-
-  if (!replaced) {
-    updatedDirectives.push(`connect-src ${normalizedSources.join(' ')}`);
-  }
-
-  return `${updatedDirectives.join('; ')};`;
 };
 
 const CROSS_ORIGIN_ISOLATION_HEADERS = {
@@ -131,22 +181,8 @@ const installCspAllowlist = () => {
     }
 
     const responseHeaders = details.responseHeaders || {};
-    const headerKey = Object.keys(responseHeaders).find(
-      (key) => key.toLowerCase() === 'content-security-policy',
-    );
-
-    if (headerKey) {
-      const existingValue = Array.isArray(responseHeaders[headerKey])
-        ? responseHeaders[headerKey].join(' ')
-        : `${responseHeaders[headerKey] || ''}`;
-      responseHeaders[headerKey] = [
-        mergeConnectSrcDirective(existingValue, connectSrcAllowlist),
-      ];
-    } else {
-      responseHeaders['Content-Security-Policy'] = [
-        `connect-src ${connectSrcAllowlist.join(' ')};`,
-      ];
-    }
+    const cspValue = buildCspHeaderValue();
+    applyHeaderValue(responseHeaders, 'Content-Security-Policy', cspValue);
 
     Object.entries(CROSS_ORIGIN_ISOLATION_HEADERS).forEach(([header, value]) => {
       applyHeaderValue(responseHeaders, header, value);
