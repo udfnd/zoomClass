@@ -1,230 +1,300 @@
-/* eslint-disable no-console */
-/**
- * MeetingScreen.jsx
- *
- * 주요 변경점
- * 1) axios 제거 → fetch 사용
- * 2) import.meta 제거 → process.env.NODE_ENV 사용
- * 3) dependentAssets 소스별로 정확히 전달 (Global/CDN/CN/로컬)
- * 4) 로컬 에셋 경로 자동 탐지 및 폴백
- * 5) 에러 핸들링/로깅 강화
- */
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { loadZoomEmbeddedSdk } from './utils/zoomSdkLoader';
 
-import React, { useCallback, useMemo, useRef, useState } from 'react';
-import ZoomVideo from '@zoom/videosdk';
+const STATUS_LABELS = {
+    idle: '대기 중',
+    preparing: 'Zoom SDK 준비 중…',
+    joining: '회의 참가 중…',
+    joined: '회의 참가 완료',
+    error: '오류 발생',
+    leaving: '회의 종료 중…',
+};
 
-const NODE_ENV = typeof process !== 'undefined' && process.env && process.env.NODE_ENV
-    ? process.env.NODE_ENV
-    : 'production';
+const formatMeetingNumber = (value) => {
+    if (!value) return '';
+    const digits = `${value}`.replace(/[^\d]/g, '');
+    if (digits.length <= 3) return digits;
+    if (digits.length <= 7) return `${digits.slice(0, 3)} ${digits.slice(3)}`;
+    return `${digits.slice(0, 3)} ${digits.slice(3, 7)} ${digits.slice(7)}`;
+};
 
-const isDev = NODE_ENV !== 'production';
-
-/** 표준 fetch 래퍼: JSON 반환 & 에러 메시지 친절화 */
-async function httpGetJson(url) {
-    const res = await fetch(url, {
-        // 같은 도메인(토큰 서버가 동일 호스트/포트) 쿠키를 쓰는 구성을 대비
-        credentials: 'include',
-        headers: { 'Accept': 'application/json' },
-    });
-    if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new Error(`HTTP ${res.status} for ${url}${text ? `: ${text}` : ''}`);
+async function copyToClipboard(text) {
+    try {
+        await navigator.clipboard.writeText(text);
+        return true;
+    } catch (error) {
+        console.warn('Failed to copy to clipboard:', error);
+        return false;
     }
-    const data = await res.json();
-    return data;
 }
 
-/**
- * 토큰 서버 엔드포인트 자동 탐색
- * - 환경변수 또는 여러 흔한 경로를 순차 시도
- * - Video SDK 토큰(JSON 키는 일반적으로 "token")
- */
-async function fetchVideoSdkToken({ topic, userName }) {
-    // 필요 시 .env에 ZOOM_VIDEO_TOKEN_ENDPOINT를 추가하세요 (예: http://localhost:4000/video/token)
-    const envEndpoint = (typeof process !== 'undefined' && process.env && process.env.ZOOM_VIDEO_TOKEN_ENDPOINT)
-        ? process.env.ZOOM_VIDEO_TOKEN_ENDPOINT
-        : undefined;
+export default function MeetingScreen({ meetingContext, onLeaveMeeting }) {
+    const zoomRootRef = useRef(null);
+    const clientRef = useRef(null);
+    const hasInitRef = useRef(false);
+    const [statusKey, setStatusKey] = useState('idle');
+    const [error, setError] = useState('');
+    const [copyMessage, setCopyMessage] = useState('');
+    const [sdkReady, setSdkReady] = useState(false);
 
-    const candidates = [
-        envEndpoint,
-        '/video/token',
-        '/api/video/token',
-        '/meeting/token',           // 리포 별도 구현 대비
-        'http://localhost:4000/video/token',
-        'http://127.0.0.1:4000/video/token',
-    ].filter(Boolean);
-
-    let lastErr = null;
-    for (const url of candidates) {
-        try {
-            console.log(`[Token] Trying endpoint: ${url}`);
-            // 일반적으로 topic/username을 쿼리/바디로 보낼 수 있으나, 서버 구현이 달라도
-            // 대부분은 서버 측에서 자체 생성하므로 파라미터 없이도 동작합니다.
-            // 서버가 GET->POST JSON을 요구한다면 필요에 맞게 수정하세요.
-            const data = await httpGetJson(url);
-            const token = data.token || data.jwt || data.signature || data.access_token;
-            if (!token) {
-                throw new Error(`No token-like field in response from ${url}`);
-            }
-            console.log(`[Token] Success from: ${url}`);
-            return token;
-        } catch (e) {
-            lastErr = e;
-            console.warn(`[Token] Failed at ${url}:`, e?.message || e);
+    const info = useMemo(() => {
+        if (!meetingContext) {
+            return {
+                topic: '',
+                hostName: '',
+                meetingNumber: '',
+                passcode: '',
+                shareLink: '',
+                joinUrl: '',
+                role: 0,
+            };
         }
-    }
-    throw new Error(`Failed to obtain Video SDK token from all candidates. Last error: ${lastErr?.message || lastErr}`);
-}
 
-/**
- * Electron Forge(Webpack) dev-server가 내보내는 정적 자산 위치를 추정
- * 빌드 로그상 main_window/lib 과 lib 모두 생성되므로 둘 다 시도
- */
-function computeLocalLibCandidates() {
-    // 현재 로드 경로 기준 상대 경로도 함께 검토
-    const fromMainWindow = '/main_window/lib'; // electron-forge plugin-webpack가 흔히 쓰는 공개 경로
-    const fromRoot = '/lib';
-    const relative = 'lib';
-    return [fromMainWindow, fromRoot, relative];
-}
+        return {
+            topic: meetingContext.topic || meetingContext.sessionName || '',
+            hostName: meetingContext.hostName || meetingContext.userName || '',
+            meetingNumber: meetingContext.meetingNumber || '',
+            passcode: meetingContext.passcode || '',
+            shareLink: meetingContext.shareLink || '',
+            joinUrl: meetingContext.joinUrl || '',
+            role: meetingContext.role ?? 0,
+        };
+    }, [meetingContext]);
 
-/**
- * 문서 기준 Zoom Video SDK init 시그니처:
- *   client.init(language: string, dependentAssets: 'Global'|'CDN'|'CN'|string, options?)
- * ref: https://marketplacefront.zoom.us/sdk/custom/web/modules/VideoClient.html (2.2.0)
- */
-async function initZoomClientWithFallback(client) {
-    // 시도 순서: Global → CDN → 로컬(main_window/lib, lib, ./lib) → CN
-    // 문서상의 dependentAssets 값과 우리가 로드하려는 소스가 반드시 일치해야 함.
-    const attempts = [
-        { label: 'Zoom Global',      dependent: 'Global',    url: 'https://source.zoom.us/videosdk/{version}/lib' },
-        { label: 'Zoom Global CDN',  dependent: 'CDN',       url: 'https://dmogdx0jrul3u.cloudfront.net/videosdk/{version}/lib' },
-        // 로컬 번들: 문자열 경로 전달
-        ...computeLocalLibCandidates().map(p => ({ label: `Bundled local assets (${p})`, dependent: p, url: p })),
-        { label: 'Zoom China CDN',   dependent: 'CN',        url: 'https://jssdk.zoomus.cn/videosdk/{version}/lib' },
-    ];
+    useEffect(() => {
+        let cancelled = false;
 
-    let lastErr = null;
-    for (const a of attempts) {
-        try {
-            console.log(`[SDK] Attempting init using ${a.label} (${a.url}) with dependentAssets=${a.dependent}`);
-            await client.init('en-US', a.dependent, {
-                patchJsMedia: true,           // 권장 옵션(성능/호환성)
-                enforceMultipleVideos: true,  // 예시 옵션(다중 비디오 스트림)
+        setStatusKey((prev) => (prev === 'idle' ? 'preparing' : prev));
+
+        loadZoomEmbeddedSdk()
+            .then((ZoomMtgEmbedded) => {
+                if (cancelled) {
+                    return;
+                }
+                const client = ZoomMtgEmbedded.createClient();
+                clientRef.current = client;
+                setSdkReady(true);
+            })
+            .catch((loadError) => {
+                if (cancelled) {
+                    return;
+                }
+                console.error('[MeetingScreen] SDK load failed:', loadError);
+                setError(loadError?.message || String(loadError));
+                setStatusKey('error');
             });
-            console.log(`[SDK] Initialized successfully via ${a.label}`);
-            return a; // 성공한 경로 반환
-        } catch (e) {
-            lastErr = e;
-            console.warn(`[SDK] Failed to init via ${a.label}: ${e?.message || e}`);
-        }
-    }
-    throw new Error(`Zoom SDK init failed for all sources. Last error: ${lastErr?.message || lastErr}`);
-}
 
-export default function MeetingScreen() {
-    const clientRef = useRef(ZoomVideo.createClient());
-    const [status, setStatus] = useState('대기 중');
-    const [joined, setJoined] = useState(false);
-    const [lastInitSource, setLastInitSource] = useState(null);
-    const [error, setError] = useState(null);
-
-    const topic = useMemo(() => 'zoom-class-session', []);
-    const userName = useMemo(() => 'Teacher', []);
-    const password = ''; // 필요시 세팅
-
-    const startClass = useCallback(async () => {
-        setError(null);
-        setStatus('토큰 요청 중…');
-
-        try {
-            // 1) 서버에서 Video SDK 토큰 발급 받기
-            const token = await fetchVideoSdkToken({ topic, userName });
-
-            // 2) SDK 초기화 (폴백 포함)
-            setStatus('Zoom SDK 초기화 중…');
-            const initUsed = await initZoomClientWithFallback(clientRef.current);
-            setLastInitSource(initUsed);
-
-            // 3) 세션 조인
-            setStatus('세션 참가 중…');
-            await clientRef.current.join(topic, token, userName, password);
-            setJoined(true);
-            setStatus(`세션 참가 완료 (via ${initUsed.label})`);
-            console.log('[Join] Success', { topic, userName });
-
-            // 비디오/오디오 시작 (권한 허용 후)
-            const mediaStream = clientRef.current.getMediaStream();
-            try {
-                await mediaStream.startVideo();
-            } catch (e) {
-                console.warn('[Video] startVideo failed:', e?.message || e);
-            }
-            try {
-                await mediaStream.startAudio();
-            } catch (e) {
-                console.warn('[Audio] startAudio failed:', e?.message || e);
-            }
-        } catch (e) {
-            console.error('[StartClass] Error:', e);
-            setError(e?.message || String(e));
-            setStatus('오류 발생');
-        }
-    }, [topic, userName]);
-
-    const leaveClass = useCallback(async () => {
-        try {
-            await clientRef.current.leave(false);
-        } catch {}
-        setJoined(false);
-        setStatus('대기 중');
+        return () => {
+            cancelled = true;
+            (async () => {
+                const client = clientRef.current;
+                if (!client) {
+                    return;
+                }
+                try {
+                    await client.leave();
+                } catch (leaveError) {
+                    console.warn('[MeetingScreen] leave on unmount failed:', leaveError);
+                }
+                try {
+                    client.destroy?.();
+                } catch (destroyError) {
+                    console.warn('[MeetingScreen] destroy on unmount failed:', destroyError);
+                }
+                clientRef.current = null;
+                hasInitRef.current = false;
+            })();
+        };
     }, []);
 
+    useEffect(() => {
+        const context = meetingContext;
+        if (!context || !clientRef.current || !zoomRootRef.current || !sdkReady) {
+            return;
+        }
+
+        if (!context.signature || !context.sdkKey || !context.meetingNumber) {
+            setError('회의 정보가 부족합니다. 백엔드 설정을 다시 확인해주세요.');
+            setStatusKey('error');
+            return;
+        }
+
+        let cancelled = false;
+
+        const joinMeeting = async () => {
+            setError('');
+            setStatusKey('preparing');
+
+            try {
+                if (!hasInitRef.current) {
+                    await clientRef.current.init({
+                        zoomAppRoot: zoomRootRef.current,
+                        language: 'ko-KR',
+                        patchJsMedia: true,
+                        customize: {
+                            meetingInfo: ['topic', 'host', 'mn', 'pwd', 'participant'],
+                            video: { isResizable: true },
+                        },
+                    });
+                    hasInitRef.current = true;
+                }
+
+                if (cancelled) {
+                    return;
+                }
+
+                setStatusKey('joining');
+                await clientRef.current.join({
+                    sdkKey: context.sdkKey,
+                    signature: context.signature,
+                    meetingNumber: context.meetingNumber,
+                    password: context.passcode || '',
+                    userName: context.userName,
+                });
+
+                if (cancelled) {
+                    return;
+                }
+
+                setStatusKey('joined');
+            } catch (joinError) {
+                if (cancelled) {
+                    return;
+                }
+
+                console.error('[MeetingScreen] Failed to join meeting:', joinError);
+                setError(joinError?.message || String(joinError));
+                setStatusKey('error');
+            }
+        };
+
+        joinMeeting();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [meetingContext, sdkReady]);
+
+    const handleLeaveMeeting = useCallback(async () => {
+        setStatusKey('leaving');
+        try {
+            await clientRef.current?.leave?.();
+        } catch (leaveError) {
+            console.warn('[MeetingScreen] leave failed:', leaveError);
+        } finally {
+            onLeaveMeeting?.();
+        }
+    }, [onLeaveMeeting]);
+
+    const handleCopyShareLink = useCallback(async () => {
+        if (!info.shareLink) {
+            setCopyMessage('공유 링크가 없습니다.');
+            return;
+        }
+        const ok = await copyToClipboard(info.shareLink);
+        setCopyMessage(ok ? '공유 링크가 복사되었습니다.' : '클립보드 복사에 실패했습니다.');
+        setTimeout(() => setCopyMessage(''), 3000);
+    }, [info.shareLink]);
+
+    const statusLabel = STATUS_LABELS[statusKey] || STATUS_LABELS.idle;
+
     return (
-        <div style={{ padding: 16 }}>
-            <h2 style={{ margin: 0 }}>새로운 수업</h2>
-            <p style={{ marginTop: 8, color: '#666' }}>
-                환경: <strong>{NODE_ENV}</strong>
-            </p>
+        <div className="meeting-screen" style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div>
+                    <h2 style={{ margin: 0 }}>{info.topic || 'Zoom 수업'}</h2>
+                    <p style={{ margin: '4px 0 0', color: '#4b5563' }}>담당 선생님: {info.hostName || '정보 없음'}</p>
+                    <p style={{ margin: '4px 0 0', color: '#6b7280' }}>
+                        회의 번호: <strong>{formatMeetingNumber(info.meetingNumber)}</strong>
+                        {info.passcode ? (
+                            <>
+                                {' '}• 회의 암호: <strong>{info.passcode}</strong>
+                            </>
+                        ) : null}
+                    </p>
+                </div>
+                <button
+                    type="button"
+                    onClick={handleLeaveMeeting}
+                    style={{
+                        padding: '10px 18px',
+                        backgroundColor: '#ef4444',
+                        color: '#fff',
+                        border: 'none',
+                        borderRadius: 8,
+                        cursor: 'pointer',
+                        fontWeight: 600,
+                    }}
+                >
+                    회의 종료
+                </button>
+            </header>
 
-            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-                {!joined ? (
-                    <button onClick={startClass} style={{ padding: '8px 12px', cursor: 'pointer' }}>
-                        새로운 수업 생성
-                    </button>
-                ) : (
-                    <button onClick={leaveClass} style={{ padding: '8px 12px', cursor: 'pointer' }}>
-                        수업 종료
-                    </button>
-                )}
-            </div>
-
-            <div style={{ marginTop: 12 }}>
-                <div><strong>상태:</strong> {status}</div>
-                {lastInitSource && (
-                    <div style={{ marginTop: 4 }}>
-                        <strong>에셋 경로:</strong> {lastInitSource.label} ({lastInitSource.url})
+            <section
+                style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+                    gap: 16,
+                    backgroundColor: '#f9fafb',
+                    borderRadius: 16,
+                    padding: 16,
+                }}
+            >
+                <div>
+                    <h3 style={{ margin: '0 0 8px' }}>회의 상태</h3>
+                    <p style={{ margin: 0, color: '#1f2937', fontWeight: 600 }}>{statusLabel}</p>
+                    {error && (
+                        <p style={{ margin: '8px 0 0', color: '#b91c1c', whiteSpace: 'pre-wrap' }}>{error}</p>
+                    )}
+                </div>
+                <div>
+                    <h3 style={{ margin: '0 0 8px' }}>공유 링크</h3>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                        <input
+                            type="text"
+                            readOnly
+                            value={info.shareLink || info.joinUrl || ''}
+                            style={{
+                                flex: 1,
+                                padding: '10px 12px',
+                                borderRadius: 8,
+                                border: '1px solid #d1d5db',
+                                backgroundColor: '#fff',
+                            }}
+                            onFocus={(event) => event.target.select()}
+                        />
+                        <button
+                            type="button"
+                            onClick={handleCopyShareLink}
+                            style={{
+                                padding: '10px 16px',
+                                borderRadius: 8,
+                                border: '1px solid #2563eb',
+                                background: '#2563eb',
+                                color: '#fff',
+                                cursor: 'pointer',
+                                fontWeight: 600,
+                            }}
+                        >
+                            복사
+                        </button>
                     </div>
-                )}
-                {error && (
-                    <pre
-                        style={{
-                            marginTop: 12,
-                            background: '#2b2b2b',
-                            color: '#eee',
-                            padding: 12,
-                            borderRadius: 8,
-                            whiteSpace: 'pre-wrap',
-                            wordBreak: 'break-all',
-                        }}
-                    >
-            {error}
-          </pre>
-                )}
-            </div>
+                    {copyMessage && <p style={{ margin: '8px 0 0', color: '#2563eb' }}>{copyMessage}</p>}
+                </div>
+            </section>
 
-            {/* 비디오 렌더 타겟 예시 */}
-            <div id="video-root" style={{ width: '100%', height: 480, marginTop: 16, background: '#111', borderRadius: 8 }} />
+            <section
+                style={{
+                    flex: 1,
+                    minHeight: 480,
+                    borderRadius: 16,
+                    overflow: 'hidden',
+                    boxShadow: '0 12px 32px rgba(15, 23, 42, 0.18)',
+                    backgroundColor: '#000',
+                }}
+            >
+                <div ref={zoomRootRef} style={{ width: '100%', height: '100%' }} />
+            </section>
         </div>
     );
 }

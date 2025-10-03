@@ -56,13 +56,21 @@ export const parseJoinLink = (input) => {
         return null;
     }
 
-    const sessionName =
-        url.searchParams.get('sessionName') ||
-        url.searchParams.get('session') ||
+    const meetingNumber =
+        url.searchParams.get('meetingNumber') ||
+        url.searchParams.get('mn') ||
         url.searchParams.get('meeting') ||
-        url.searchParams.get('topic');
+        url.searchParams.get('sessionNumber');
 
-    if (!sessionName) {
+    const passcode =
+        url.searchParams.get('passcode') ||
+        url.searchParams.get('pwd') ||
+        url.searchParams.get('password');
+
+    const topicParam =
+        url.searchParams.get('topic') || url.searchParams.get('sessionName') || url.searchParams.get('session');
+
+    if (!meetingNumber) {
         return null;
     }
 
@@ -82,10 +90,20 @@ export const parseJoinLink = (input) => {
         url.searchParams.get('name') ||
         '';
 
+    const hostName =
+        url.searchParams.get('hostName') ||
+        url.searchParams.get('teacher') ||
+        url.searchParams.get('instructor') ||
+        '';
+
     return {
-        sessionName,
+        sessionName: topicParam || '',
+        topic: topicParam || '',
+        meetingNumber,
+        passcode: passcode || '',
         backendUrl,
         joinUrl: url.toString(),
         displayName,
+        hostName,
     };
 };

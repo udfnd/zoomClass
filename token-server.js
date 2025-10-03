@@ -18,6 +18,10 @@ const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const supabaseRestUrl = supabaseUrl ? `${supabaseUrl.replace(/\/$/, '')}/rest/v1` : null;
 
+const zoomAccountId = process.env.ZOOM_ACCOUNT_ID;
+const zoomClientId = process.env.ZOOM_CLIENT_ID;
+const zoomClientSecret = process.env.ZOOM_CLIENT_SECRET;
+
 if (!supabaseRestUrl || !supabaseServiceRoleKey) {
     console.warn('[backend] Supabase URL or service role key is missing. Calendar endpoints will be disabled.');
 }
@@ -62,6 +66,119 @@ const supabaseRequest = async (path, options = {}) => {
     return response;
 };
 
+const ensureMeetingSdkConfigured = () => {
+    if (!SDK_KEY || !SDK_SECRET) {
+        throw new Error('ZOOM_SDK_KEY 또는 ZOOM_SDK_SECRET 환경 변수가 필요합니다.');
+    }
+};
+
+const ensureZoomOAuthConfigured = () => {
+    if (!zoomAccountId || !zoomClientId || !zoomClientSecret) {
+        throw new Error('ZOOM_ACCOUNT_ID, ZOOM_CLIENT_ID, ZOOM_CLIENT_SECRET 환경 변수를 설정해주세요.');
+    }
+};
+
+const generateMeetingSdkSignature = ({ meetingNumber, role }) => {
+    ensureMeetingSdkConfigured();
+
+    const normalizedMeetingNumber = `${meetingNumber}`.trim();
+    if (!normalizedMeetingNumber) {
+        throw new Error('회의 번호가 필요합니다.');
+    }
+
+    const normalizedRole = Number(role) === 1 ? 1 : 0;
+    const timestamp = Date.now() - 30000;
+    const message = Buffer.from(`${SDK_KEY}${normalizedMeetingNumber}${timestamp}${normalizedRole}`).toString('base64');
+    const hash = crypto.createHmac('sha256', SDK_SECRET).update(message).digest('base64');
+    const signature = Buffer.from(
+        `${SDK_KEY}.${normalizedMeetingNumber}.${timestamp}.${normalizedRole}.${hash}`,
+    ).toString('base64');
+    return signature;
+};
+
+const fetchZoomAccessToken = async () => {
+    ensureZoomOAuthConfigured();
+
+    const basicAuth = Buffer.from(`${zoomClientId}:${zoomClientSecret}`).toString('base64');
+    const response = await fetch(
+        `https://zoom.us/oauth/token?grant_type=account_credentials&account_id=${encodeURIComponent(zoomAccountId)}`,
+        {
+            method: 'POST',
+            headers: {
+                Authorization: `Basic ${basicAuth}`,
+            },
+        },
+    );
+
+    if (!response.ok) {
+        const bodyText = await response.text();
+        throw new Error(`Zoom OAuth 토큰 발급 실패: ${response.status} ${response.statusText} - ${bodyText}`);
+    }
+
+    const data = await response.json();
+    if (!data.access_token) {
+        throw new Error('Zoom OAuth 응답에 access_token이 없습니다.');
+    }
+    return data.access_token;
+};
+
+const createZoomMeeting = async ({ topic, hostName }) => {
+    const accessToken = await fetchZoomAccessToken();
+
+    const payload = {
+        topic: topic || 'ZoomClass Session',
+        type: 1,
+        agenda: hostName ? `Host: ${hostName}` : undefined,
+        settings: {
+            host_video: true,
+            participant_video: true,
+            join_before_host: false,
+            waiting_room: false,
+        },
+    };
+
+    const response = await fetch('https://api.zoom.us/v2/users/me/meetings', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+        const bodyText = await response.text();
+        throw new Error(`Zoom 회의 생성 실패: ${response.status} ${response.statusText} - ${bodyText}`);
+    }
+
+    const data = await response.json();
+    if (!data || !data.id) {
+        throw new Error('Zoom 회의 생성 응답에 회의 ID가 없습니다.');
+    }
+
+    return data;
+};
+
+const buildJoinHelperUrl = (req, { meetingNumber, passcode, topic, hostName, backendBase }) => {
+    const origin = `${req.protocol}://${req.get('host')}`;
+    const basePath = req.baseUrl ? req.baseUrl.replace(/\/$/, '') : '';
+    const joinUrl = new URL(`${origin}${basePath}/join`);
+    joinUrl.searchParams.set('meetingNumber', meetingNumber);
+    if (passcode) {
+        joinUrl.searchParams.set('passcode', passcode);
+    }
+    if (topic) {
+        joinUrl.searchParams.set('topic', topic);
+    }
+    if (hostName) {
+        joinUrl.searchParams.set('hostName', hostName);
+    }
+    if (backendBase) {
+        joinUrl.searchParams.set('backendUrl', backendBase);
+    }
+    return joinUrl.toString();
+};
+
 const generateVideoSDKToken = (sdkKey, sdkSecret, sessionName, userId) => {
     const payload = {
         app_key: sdkKey,
@@ -103,16 +220,20 @@ app.get('/join', (req, res) => {
         const fullUrl = `${req.protocol}://${req.get('host')}${req.originalUrl}`;
         const requestUrl = new URL(fullUrl);
 
-        const rawSessionName =
-            (req.query.sessionName || req.query.session || req.query.topic || '').toString().trim();
+        const rawMeetingNumber =
+            (req.query.meetingNumber || req.query.mn || req.query.meeting || '').toString().trim();
 
-        if (!rawSessionName) {
-            const message = 'sessionName query parameter is required.';
+        if (!rawMeetingNumber) {
+            const message = 'meetingNumber query parameter is required.';
             if (req.accepts('html')) {
                 return res.status(400).send(`<p>${escapeHtml(message)}</p>`);
             }
             return res.status(400).json({ error: message });
         }
+
+        const rawTopic =
+            (req.query.topic || req.query.sessionName || req.query.session || '').toString().trim();
+        const rawPasscode = (req.query.passcode || req.query.pwd || req.query.password || '').toString().trim();
 
         const rawBackendParam = (req.query.backendUrl || req.query.backend || '').toString().trim();
         let backendBase = rawBackendParam.replace(/\/+$/, '');
@@ -127,13 +248,16 @@ app.get('/join', (req, res) => {
 
         if (acceptType === 'json') {
             return res.json({
-                sessionName: rawSessionName,
+                meetingNumber: rawMeetingNumber,
+                passcode: rawPasscode,
+                topic: rawTopic,
                 backendUrl: backendBase,
                 joinUrl,
             });
         }
 
         const suggestedName = (req.query.userName || req.query.displayName || '').toString().trim();
+        const hostName = (req.query.hostName || req.query.teacher || '').toString().trim();
 
         const html = `<!DOCTYPE html>
 <html lang="ko">
@@ -201,7 +325,10 @@ app.get('/join', (req, res) => {
 <body>
     <div class="card">
         <h1>ZoomClass 수업 참여 안내</h1>
-        <p><span class="session-name">${escapeHtml(rawSessionName)}</span> 수업에 참여하려면 아래 순서를 따라주세요.</p>
+        <p><span class="session-name">${escapeHtml(rawTopic || rawMeetingNumber)}</span> 수업에 참여하려면 아래 순서를 따라주세요.</p>
+        <p style="margin-top: 0; color: #475569;">회의 번호: <strong>${escapeHtml(rawMeetingNumber)}</strong>${
+            rawPasscode ? ` • 회의 암호: <strong>${escapeHtml(rawPasscode)}</strong>` : ''
+        }${hostName ? `<br />담당 선생님: <strong>${escapeHtml(hostName)}</strong>` : ''}</p>
         <ol class="steps">
             <li>ZoomClass 애플리케이션을 실행합니다.</li>
             <li>로비 화면의 <strong>수업 참여</strong> 영역에 이 페이지의 링크를 붙여넣습니다.</li>
@@ -221,6 +348,82 @@ app.get('/join', (req, res) => {
     } catch (error) {
         console.error('[backend] Failed to render join helper:', error);
         return res.status(500).json({ error: 'Failed to render join helper.' });
+    }
+});
+
+app.post('/meeting/create', async (req, res) => {
+    const { topic, hostName } = req.body || {};
+
+    if (!topic || !hostName) {
+        return res.status(400).json({ error: 'topic and hostName are required.' });
+    }
+
+    try {
+        const meeting = await createZoomMeeting({ topic, hostName });
+        const meetingNumber = `${meeting.id}`;
+        const passcode = meeting.password || meeting.passcode || '';
+        const signature = generateMeetingSdkSignature({ meetingNumber, role: 1 });
+
+        const backendBase = `${req.protocol}://${req.get('host')}${req.baseUrl || ''}`.replace(/\/+$/, '');
+        const shareLink = buildJoinHelperUrl(req, {
+            meetingNumber,
+            passcode,
+            topic,
+            hostName,
+            backendBase,
+        });
+
+        if (supabaseRestUrl && supabaseServiceRoleKey) {
+            try {
+                await supabaseRequest('meetings', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        Prefer: 'return=representation',
+                    },
+                    body: JSON.stringify([
+                        {
+                            session_name: topic,
+                            host_name: hostName,
+                            start_time: new Date().toISOString(),
+                        },
+                    ]),
+                });
+            } catch (storeError) {
+                console.warn('[backend] Failed to store meeting in Supabase:', storeError);
+            }
+        }
+
+        return res.json({
+            topic,
+            hostName,
+            meetingNumber,
+            passcode,
+            joinUrl: meeting.join_url,
+            startUrl: meeting.start_url,
+            sdkKey: SDK_KEY,
+            signature,
+            shareLink,
+        });
+    } catch (error) {
+        console.error('[backend] Failed to create Zoom meeting:', error);
+        return res.status(500).json({ error: 'Failed to create Zoom meeting.', details: error.message });
+    }
+});
+
+app.post('/meeting/signature', (req, res) => {
+    try {
+        const { meetingNumber, role } = req.body || {};
+        if (!meetingNumber) {
+            return res.status(400).json({ error: 'meetingNumber is required.' });
+        }
+
+        const normalizedRole = Number(role) === 1 ? 1 : 0;
+        const signature = generateMeetingSdkSignature({ meetingNumber, role: normalizedRole });
+        return res.json({ signature, sdkKey: SDK_KEY, role: normalizedRole });
+    } catch (error) {
+        console.error('[backend] Failed to generate meeting signature:', error);
+        return res.status(500).json({ error: 'Failed to generate meeting signature.', details: error.message });
     }
 });
 
