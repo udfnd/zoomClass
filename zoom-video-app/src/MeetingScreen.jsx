@@ -1,13 +1,17 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import ZoomVideo from '@zoom/videosdk';
+import ZoomVideo, { SharePrivilege, VideoQuality } from '@zoom/videosdk';
 import { normalizeBackendUrl } from './utils/backend';
 
 const APP_KEY = process.env.ZOOM_SDK_KEY;
+const SDK_LIB_URL = process.env.ZOOM_SDK_LIB_URL || 'https://source.zoom.us/videosdk/2.1.10/lib';
+const DEFAULT_SHARE_DIMENSIONS = { width: 960, height: 540 };
 
 function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
     const videoRef = useRef(null);
     const shareCanvasRef = useRef(null);
     const client = useRef(null);
+    const renderedRemoteVideos = useRef(new Map());
+    const hasLeftRef = useRef(false);
     const [isClientInited, setIsClientInited] = useState(false);
     const [isJoined, setIsJoined] = useState(false);
     const [currentStream, setCurrentStream] = useState(null);
@@ -31,7 +35,7 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
         try {
             console.log('Initializing Zoom SDK...');
             client.current = ZoomVideo.createClient();
-            await client.current.init('en-US', `${window.location.origin}/lib`, { patchJsMedia: true });
+            await client.current.init('en-US', SDK_LIB_URL, { patchJsMedia: true });
             console.log('Zoom SDK initialized successfully.');
             setIsClientInited(true);
         } catch (error) {
@@ -83,6 +87,7 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
                 throw new Error('Received an empty token.');
             }
 
+            hasLeftRef.current = false;
             await client.current.join(sessionName, token, userName);
             setIsJoined(true);
             console.log('Joined session successfully.');
@@ -91,14 +96,33 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
             setCurrentStream(stream);
 
             if (videoRef.current && !stream.isAudioOnly()) {
-                await stream.startVideo({ videoElement: videoRef.current });
+                const startVideoResult = await stream.startVideo({ videoElement: videoRef.current });
+                if (startVideoResult && typeof startVideoResult === 'object') {
+                    throw new Error(startVideoResult.reason || 'Failed to start local video');
+                }
                 console.log('Local video started.');
+                try {
+                    const startAudioResult = await stream.startAudio();
+                    if (startAudioResult && typeof startAudioResult === 'object') {
+                        throw new Error(startAudioResult.reason || 'Failed to start local audio');
+                    }
+                    console.log('Local audio started alongside video.');
+                } catch (audioError) {
+                    console.error('Unable to start local audio:', audioError);
+                    alert(`오디오 시작에 실패했습니다: ${audioError.message}`);
+                }
             } else if (stream.isAudioOnly()) {
-                await stream.startAudio();
+                const startAudioResult = await stream.startAudio();
+                if (startAudioResult && typeof startAudioResult === 'object') {
+                    throw new Error(startAudioResult.reason || 'Failed to start local audio');
+                }
                 console.log('Local audio started (audio only).');
             } else {
                 console.warn('Video stream is available but no video element to render to. Starting audio only.');
-                await stream.startAudio();
+                const startAudioResult = await stream.startAudio();
+                if (startAudioResult && typeof startAudioResult === 'object') {
+                    throw new Error(startAudioResult.reason || 'Failed to start local audio');
+                }
             }
         } catch (error) {
             console.error('Error joining session:', error);
@@ -117,40 +141,110 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
         }
     }, [isClientInited, sessionName, userName, isJoined, joinSession]);
 
-    const cleanupShare = useCallback(async () => {
+    const cleanupRemoteVideos = useCallback(async () => {
         if (!currentStream) {
+            renderedRemoteVideos.current.clear();
             return;
         }
-        if (typeof currentStream.stopShareScreen === 'function') {
-            try {
-                await currentStream.stopShareScreen();
-            } catch (error) {
-                console.warn('Failed to stop local share screen:', error);
+
+        const stream = currentStream;
+        const stopTasks = [];
+        renderedRemoteVideos.current.forEach((canvas, userId) => {
+            if (!canvas) {
+                renderedRemoteVideos.current.delete(userId);
+                return;
+            }
+            stopTasks.push(
+                stream
+                    .stopRenderVideo(canvas, userId)
+                    .catch((error) => console.warn('Failed to stop remote video render:', error))
+                    .finally(() => {
+                        renderedRemoteVideos.current.delete(userId);
+                    }),
+            );
+        });
+
+        if (stopTasks.length > 0) {
+            await Promise.allSettled(stopTasks);
+        }
+    }, [currentStream]);
+
+    const cleanupShare = useCallback(async () => {
+        if (currentStream) {
+            if (typeof currentStream.stopShareView === 'function') {
+                try {
+                    const stopViewResult = await currentStream.stopShareView();
+                    if (stopViewResult && typeof stopViewResult === 'object') {
+                        console.warn('Stop share view returned warning:', stopViewResult);
+                    }
+                } catch (error) {
+                    console.warn('Failed to stop share view:', error);
+                }
+            }
+
+            if (typeof currentStream.stopShareScreen === 'function') {
+                try {
+                    const stopShareResult = await currentStream.stopShareScreen();
+                    if (stopShareResult && typeof stopShareResult === 'object') {
+                        console.warn('Stop share screen returned warning:', stopShareResult);
+                    }
+                } catch (error) {
+                    console.warn('Failed to stop local share screen:', error);
+                }
             }
         }
-        if (typeof currentStream.stopShareView === 'function') {
-            try {
-                await currentStream.stopShareView();
-            } catch (error) {
-                console.warn('Failed to stop share view:', error);
-            }
-        }
+
         setIsSharing(false);
         setActiveShareUserId(null);
+
+        if (shareCanvasRef.current) {
+            const canvas = shareCanvasRef.current;
+            try {
+                const context = canvas.getContext('2d');
+                if (context) {
+                    context.clearRect(0, 0, canvas.width, canvas.height);
+                }
+            } catch (error) {
+                console.warn('Failed to clear share canvas:', error);
+            }
+            canvas.width = DEFAULT_SHARE_DIMENSIONS.width;
+            canvas.height = DEFAULT_SHARE_DIMENSIONS.height;
+        }
     }, [currentStream]);
 
     const leaveCurrentSession = useCallback(async () => {
+        if (hasLeftRef.current) {
+            return;
+        }
+
+        hasLeftRef.current = true;
+
         if (client.current && isJoined) {
             try {
                 console.log('Attempting to leave session...');
                 if (currentStream) {
                     await cleanupShare();
+                    await cleanupRemoteVideos();
                     if (typeof currentStream.isCapturingVideo === 'function' && currentStream.isCapturingVideo()) {
-                        await currentStream.stopVideo().catch((e) => console.error('Error stopping video:', e));
+                        try {
+                            const stopVideoResult = await currentStream.stopVideo();
+                            if (stopVideoResult && typeof stopVideoResult === 'object') {
+                                console.warn('Stop video returned warning:', stopVideoResult);
+                            }
+                        } catch (e) {
+                            console.error('Error stopping video:', e);
+                        }
                         console.log('Local video stopped.');
                     }
                     if (typeof currentStream.isCapturingAudio === 'function' && currentStream.isCapturingAudio()) {
-                        await currentStream.stopAudio().catch((e) => console.error('Error stopping audio:', e));
+                        try {
+                            const stopAudioResult = await currentStream.stopAudio();
+                            if (stopAudioResult && typeof stopAudioResult === 'object') {
+                                console.warn('Stop audio returned warning:', stopAudioResult);
+                            }
+                        } catch (e) {
+                            console.error('Error stopping audio:', e);
+                        }
                         console.log('Local audio stopped.');
                     }
                 }
@@ -160,6 +254,7 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
                 console.error('Error leaving session:', error);
             }
         }
+        renderedRemoteVideos.current.clear();
         setIsJoined(false);
         setCurrentStream(null);
         setRemoteUsers([]);
@@ -169,7 +264,7 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
         if (onLeaveMeeting) {
             onLeaveMeeting();
         }
-    }, [client, isJoined, currentStream, cleanupShare, onLeaveMeeting]);
+    }, [client, isJoined, currentStream, cleanupShare, cleanupRemoteVideos, onLeaveMeeting]);
 
     const toggleScreenShare = useCallback(async () => {
         if (!currentStream || !shareCanvasRef.current) {
@@ -178,14 +273,41 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
         }
 
         try {
+            if (!isSharing) {
+                const privilege = typeof currentStream.getSharePrivilege === 'function' ? currentStream.getSharePrivilege() : null;
+                const isShareLocked = typeof currentStream.isShareLocked === 'function' ? currentStream.isShareLocked() : false;
+                const currentUserInfo = client.current?.getCurrentUserInfo();
+                const isPrivilegedUser = currentUserInfo?.isHost || currentUserInfo?.isManager;
+
+                if (isShareLocked && !isPrivilegedUser) {
+                    alert('호스트가 화면 공유를 잠궜습니다. 공유 권한을 요청하세요.');
+                    return;
+                }
+
+                if (privilege === SharePrivilege.Locked && !isPrivilegedUser) {
+                    alert('현재 역할로는 화면 공유를 시작할 수 없습니다.');
+                    return;
+                }
+            }
+
             const currentUserId = client.current?.getCurrentUserInfo()?.userId ?? null;
             if (!isSharing) {
-                await currentStream.startShareScreen(shareCanvasRef.current);
+                const shareResult = await currentStream.startShareScreen(shareCanvasRef.current);
+                if (shareResult && typeof shareResult === 'object') {
+                    if (shareResult.reason === 'required extension') {
+                        alert('Chrome 확장 프로그램 설치 후 다시 시도해주세요.');
+                        return;
+                    }
+                    throw new Error(shareResult.reason || 'Failed to start screen share');
+                }
                 setIsSharing(true);
                 setActiveShareUserId(currentUserId);
             } else {
                 if (typeof currentStream.stopShareScreen === 'function') {
-                    await currentStream.stopShareScreen();
+                    const stopResult = await currentStream.stopShareScreen();
+                    if (stopResult && typeof stopResult === 'object') {
+                        throw new Error(stopResult.reason || 'Failed to stop screen share');
+                    }
                 }
                 setIsSharing(false);
                 if (activeShareUserId === currentUserId) {
@@ -196,7 +318,7 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
             console.error('Failed to toggle screen share:', error);
             alert(`화면 공유 중 오류가 발생했습니다: ${error.message}`);
         }
-    }, [currentStream, isSharing, activeShareUserId]);
+    }, [client, currentStream, isSharing, activeShareUserId]);
 
     useEffect(() => {
         if (!client.current || !isJoined) return;
@@ -211,62 +333,133 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
         const handleUserLeft = () => {
             setRemoteUsers(client.current.getAllUser());
         };
-        const handleStreamAdded = async (stream) => {
-            if (!stream) return;
-            const remoteUserId = stream.userId;
-            const remoteVideoElement = document.getElementById(`video-user-${remoteUserId}`);
-
-            try {
-                if (remoteVideoElement && typeof stream.startVideo === 'function' && !stream.isAudioOnly()) {
-                    await stream.startVideo({ videoElement: remoteVideoElement });
-                } else if (typeof stream.startAudio === 'function') {
-                    await stream.startAudio();
-                }
-            } catch (error) {
-                console.error('Failed to render remote stream:', error);
-            }
+        const handleStreamAdded = () => {
+            setRemoteUsers(client.current.getAllUser());
         };
-        const handleStreamRemoved = (stream) => {
-            console.log('Stream removed:', stream);
+        const handleStreamRemoved = async (payload) => {
+            const userId = payload?.userId ?? payload?.userID ?? payload?.user?.userId ?? null;
+            if (userId != null) {
+                const canvas = renderedRemoteVideos.current.get(userId);
+                if (canvas && currentStream) {
+                    try {
+                        await currentStream.stopRenderVideo(canvas, userId);
+                    } catch (error) {
+                        console.warn('Failed to stop remote video after stream removal:', error);
+                    }
+                    renderedRemoteVideos.current.delete(userId);
+                }
+            }
+            setRemoteUsers(client.current.getAllUser());
         };
 
         const handleShareState = async (payload) => {
             if (!currentStream) return;
             const eventState = payload?.state || payload?.action;
-            const userId = payload?.userId ?? payload?.userID ?? payload?.user?.userId ?? null;
+            const rawUserId =
+                payload?.userId ??
+                payload?.userID ??
+                payload?.user?.userId ??
+                payload?.activeUserId ??
+                null;
+            const userId =
+                typeof rawUserId === 'number'
+                    ? rawUserId
+                    : typeof currentStream.getActiveShareUserId === 'function'
+                    ? currentStream.getActiveShareUserId()
+                    : null;
 
             if (!eventState) {
                 return;
             }
 
-            if (eventState === 'Start') {
+            if (eventState === 'Start' || eventState === 'Active') {
+                if (userId == null) {
+                    return;
+                }
                 setActiveShareUserId(userId);
-                if (userId === client.current?.getCurrentUserInfo()?.userId) {
+                const currentUserId = client.current?.getCurrentUserInfo()?.userId;
+                if (userId === currentUserId) {
                     setIsSharing(true);
                     return;
                 }
                 if (shareCanvasRef.current && typeof currentStream.startShareView === 'function') {
                     try {
-                        await currentStream.startShareView({
-                            userId,
-                            shareCanvas: shareCanvasRef.current,
-                        });
+                        const startViewResult = await currentStream.startShareView(shareCanvasRef.current, userId);
+                        if (startViewResult && typeof startViewResult === 'object') {
+                            throw new Error(startViewResult.reason || 'Failed to start share view');
+                        }
                     } catch (error) {
                         console.error('Failed to start share view:', error);
                     }
                 }
-            } else if (eventState === 'Stop') {
-                if (userId === client.current?.getCurrentUserInfo()?.userId) {
+            } else if (eventState === 'Stop' || eventState === 'Inactive') {
+                const currentUserId = client.current?.getCurrentUserInfo()?.userId;
+                if (userId != null && userId === currentUserId) {
                     setIsSharing(false);
                 }
-                setActiveShareUserId((prev) => (prev === userId ? null : prev));
+                setActiveShareUserId((prev) => (prev === userId || userId == null ? null : prev));
                 if (typeof currentStream.stopShareView === 'function') {
                     try {
-                        await currentStream.stopShareView();
+                        const stopViewResult = await currentStream.stopShareView();
+                        if (stopViewResult && typeof stopViewResult === 'object') {
+                            throw new Error(stopViewResult.reason || 'Failed to stop share view');
+                        }
                     } catch (error) {
                         console.error('Failed to stop share view:', error);
                     }
                 }
+            }
+        };
+
+        const handlePassiveStopShare = async () => {
+            await cleanupShare();
+        };
+
+        const handleShareDimensionChange = (payload) => {
+            if (payload?.type !== 'received') {
+                return;
+            }
+            if (!shareCanvasRef.current) {
+                return;
+            }
+            if (typeof payload.width === 'number' && typeof payload.height === 'number') {
+                shareCanvasRef.current.width = payload.width;
+                shareCanvasRef.current.height = payload.height;
+            }
+        };
+
+        const handlePeerVideoStateChange = async (payload) => {
+            const { action, userId } = payload || {};
+            if (typeof userId !== 'number') {
+                return;
+            }
+
+            if (action === 'Stop' && currentStream) {
+                const canvas = renderedRemoteVideos.current.get(userId);
+                if (canvas) {
+                    try {
+                        const stopResult = await currentStream.stopRenderVideo(canvas, userId);
+                        if (stopResult && typeof stopResult === 'object') {
+                            console.warn('Stop remote video returned warning:', stopResult);
+                        }
+                    } catch (error) {
+                        console.warn('Failed to stop remote video after peer state change:', error);
+                    }
+                    renderedRemoteVideos.current.delete(userId);
+                }
+            }
+
+            setRemoteUsers(client.current.getAllUser());
+        };
+
+        const handleConnectionChange = async (payload) => {
+            const state = payload?.state;
+            if (!state) {
+                return;
+            }
+            if ((state === 'Closed' || state === 'Fail') && !hasLeftRef.current) {
+                console.warn('Connection state changed to', state, '- leaving session.');
+                await leaveCurrentSession();
             }
         };
 
@@ -276,6 +469,10 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
         client.current.on('stream-removed', handleStreamRemoved);
         client.current.on('peer-share-state-change', handleShareState);
         client.current.on('active-share-change', handleShareState);
+        client.current.on('passively-stop-share', handlePassiveStopShare);
+        client.current.on('share-content-dimension-change', handleShareDimensionChange);
+        client.current.on('peer-video-state-change', handlePeerVideoStateChange);
+        client.current.on('connection-change', handleConnectionChange);
 
         return () => {
             if (client.current) {
@@ -285,9 +482,108 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
                 client.current.off('stream-removed', handleStreamRemoved);
                 client.current.off('peer-share-state-change', handleShareState);
                 client.current.off('active-share-change', handleShareState);
+                client.current.off('passively-stop-share', handlePassiveStopShare);
+                client.current.off('share-content-dimension-change', handleShareDimensionChange);
+                client.current.off('peer-video-state-change', handlePeerVideoStateChange);
+                client.current.off('connection-change', handleConnectionChange);
             }
         };
-    }, [client, currentStream, isJoined]);
+    }, [client, currentStream, isJoined, cleanupShare, leaveCurrentSession]);
+
+    useEffect(() => {
+        if (!currentStream || !isJoined) {
+            return;
+        }
+
+        const stream = currentStream;
+        const currentUserId = client.current?.getCurrentUserInfo()?.userId ?? null;
+        const activeRemoteIds = new Set();
+
+        const isUserVideoOn = (user) => {
+            if (!user) return false;
+            if (typeof user.bVideoOn === 'boolean') {
+                return user.bVideoOn;
+            }
+            if (user.videoStatus && typeof user.videoStatus.isOn === 'boolean') {
+                return user.videoStatus.isOn;
+            }
+            return false;
+        };
+
+        remoteUsers.forEach((user) => {
+            if (user.userId === currentUserId) {
+                return;
+            }
+            const canvas = document.getElementById(`video-user-${user.userId}`);
+            if (!canvas) {
+                renderedRemoteVideos.current.delete(user.userId);
+                return;
+            }
+
+            if (!isUserVideoOn(user)) {
+                const existingCanvas = renderedRemoteVideos.current.get(user.userId);
+                if (existingCanvas && currentStream) {
+                    stream
+                        .stopRenderVideo(existingCanvas, user.userId)
+                        .catch((error) => console.warn('Failed to stop remote video render for muted user:', error))
+                        .finally(() => {
+                            renderedRemoteVideos.current.delete(user.userId);
+                        });
+                }
+                return;
+            }
+
+            activeRemoteIds.add(user.userId);
+
+            const existingCanvas = renderedRemoteVideos.current.get(user.userId);
+            if (existingCanvas === canvas) {
+                return;
+            }
+
+            stream
+                .renderVideo(
+                    canvas,
+                    user.userId,
+                    canvas.width || canvas.clientWidth || 640,
+                    canvas.height || canvas.clientHeight || 360,
+                    0,
+                    0,
+                    VideoQuality.Video_360P,
+                )
+                .then((result) => {
+                    if (result && typeof result === 'object') {
+                        throw new Error(result.reason || 'Remote render failed');
+                    }
+                    renderedRemoteVideos.current.set(user.userId, canvas);
+                })
+                .catch((error) => {
+                    console.error('Failed to render remote video:', error);
+                });
+        });
+
+        renderedRemoteVideos.current.forEach((canvas, userId) => {
+            if (!activeRemoteIds.has(userId)) {
+                stream
+                    .stopRenderVideo(canvas, userId)
+                    .catch((error) => console.warn('Failed to stop remote video render:', error))
+                    .finally(() => {
+                        renderedRemoteVideos.current.delete(userId);
+                    });
+            }
+        });
+    }, [remoteUsers, currentStream, isJoined]);
+
+    useEffect(() => {
+        return () => {
+            cleanupRemoteVideos();
+        };
+    }, [cleanupRemoteVideos]);
+
+    useEffect(() => {
+        return () => {
+            leaveCurrentSession();
+        };
+    }, [leaveCurrentSession]);
 
     const activeShareUserName = (() => {
         if (!activeShareUserId) return null;
@@ -323,7 +619,7 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
                             .filter((user) => user.userId !== client.current?.getCurrentUserInfo()?.userId)
                             .map((user) => (
                                 <div key={user.userId} className="video-tile">
-                                    <video id={`video-user-${user.userId}`} playsInline />
+                                    <canvas id={`video-user-${user.userId}`} width={320} height={180} />
                                     <span className="nameplate">{user.displayName}</span>
                                 </div>
                             ))}
