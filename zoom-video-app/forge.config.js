@@ -1,39 +1,23 @@
 // zoom-video-app/forge.config.js
 const { FusesPlugin } = require('@electron-forge/plugin-fuses');
 const { FuseV1Options, FuseVersion } = require('@electron/fuses');
+const {
+  DEFAULT_BACKEND_FALLBACK,
+  ensureHttpProtocol,
+  getBackendOrigin,
+} = require('./config/backend-url');
+const { buildConnectSrcValues } = require('./config/connect-src');
 
-const backendEnvUrl = process.env.BACKEND_BASE_URL || process.env.TOKEN_SERVER_URL || 'http://localhost:4000';
-let backendOrigin = '';
-try {
-  backendOrigin = new URL(backendEnvUrl).origin;
-} catch (error) {
+const backendEnvUrl = ensureHttpProtocol(
+  process.env.BACKEND_BASE_URL || process.env.TOKEN_SERVER_URL || DEFAULT_BACKEND_FALLBACK,
+);
+
+let backendOrigin = getBackendOrigin(backendEnvUrl);
+if (!backendOrigin) {
   backendOrigin = backendEnvUrl;
 }
 
-const connectSrcValues = new Set([
-  "'self'",
-  'data:',
-  'blob:',
-  'ws://localhost:*',
-  'wss://localhost:*',
-  'http://localhost:*',
-  'https://localhost:*',
-  'https://zoom.us',
-  'https://*.zoom.us',
-  'https://source.zoom.us',
-  'https://api.zoom.us',
-  'https://marketplace.zoom.us',
-  'https://*.zoomgov.com',
-  'https://zoomgov.com',
-  'wss://*.zoom.us',
-  'wss://*.zoomgov.com',
-  'https://*.zoomus.cn',
-  'wss://*.zoomus.cn',
-]);
-
-if (backendOrigin) {
-  connectSrcValues.add(backendOrigin);
-}
+const connectSrcValues = buildConnectSrcValues(backendOrigin);
 
 const devContentSecurityPolicy = [
   "default-src 'self' 'unsafe-inline' data: blob:;",
