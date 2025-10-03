@@ -97,6 +97,103 @@ const SDK_CUSTOM_WASM_PATH = sanitizeString(process.env.ZOOM_SDK_WASM_PATH);
 
 const DEFAULT_SHARE_DIMENSIONS = { width: 960, height: 540 };
 const DEFAULT_LOCAL_ASSET_PATH = 'lib';
+const ABSOLUTE_URL_REGEX = /^[a-zA-Z][a-zA-Z\d+.-]*:/;
+
+const ensureLeadingSlash = (value) => {
+    const sanitized = sanitizeString(value);
+    if (!sanitized) {
+        return '/lib';
+    }
+
+    if (sanitized.startsWith('/')) {
+        return sanitized;
+    }
+
+    return `/${sanitized.replace(/^\/+/, '')}`;
+};
+
+const resolveJsLibRootForRuntime = (root) => {
+    const sanitized = sanitizeString(root);
+    if (!sanitized) {
+        return '';
+    }
+
+    if (ABSOLUTE_URL_REGEX.test(sanitized) || sanitized.startsWith('//')) {
+        return removeTrailingSlash(sanitized);
+    }
+
+    if (typeof window === 'undefined') {
+        return removeTrailingSlash(sanitized);
+    }
+
+    try {
+        const normalized = sanitized.replace(/^\/+/, '');
+        const resolvedUrl = new URL(normalized || '.', window.location.href);
+        return removeTrailingSlash(resolvedUrl.toString());
+    } catch (error) {
+        console.warn('Failed to resolve Zoom SDK asset root path:', error);
+        return removeTrailingSlash(sanitized);
+    }
+};
+
+const resolveCandidateForRuntime = (candidate) => {
+    if (!candidate) {
+        return candidate;
+    }
+
+    const resolvedRoot = resolveJsLibRootForRuntime(candidate.jsLibRoot);
+    const resolvedWasmPath =
+        candidate.wasmPath === null ? null : ensureLeadingSlash(candidate.wasmPath || '/lib');
+
+    return {
+        ...candidate,
+        jsLibRoot: resolvedRoot,
+        wasmPath: resolvedWasmPath,
+    };
+};
+
+const validateSdkEnvironment = () => {
+    if (typeof window === 'undefined') {
+        return;
+    }
+
+    if (!window.isSecureContext) {
+        throw new Error(
+            'Zoom SDK는 보안 컨텍스트(HTTPS 또는 localhost)에서만 실행할 수 있습니다.',
+        );
+    }
+
+    if (window.crossOriginIsolated !== true) {
+        throw new Error(
+            'Zoom SDK는 cross-origin isolation이 활성화된 환경을 필요로 합니다. 브라우저 창이 COOP 및 COEP 헤더로 격리되었는지 확인해주세요.',
+        );
+    }
+
+    if (typeof window.SharedArrayBuffer !== 'function') {
+        throw new Error(
+            'SharedArrayBuffer를 사용할 수 없어 Zoom SDK 리소스를 불러올 수 없습니다. 브라우저 설정과 보안 헤더 구성을 확인해주세요.',
+        );
+    }
+};
+
+const describeCompatibilityIssues = (compatibility) => {
+    if (!compatibility || typeof compatibility !== 'object') {
+        return '';
+    }
+
+    const unsupported = [];
+    if (compatibility.audio === false) {
+        unsupported.push('오디오');
+    }
+    if (compatibility.video === false) {
+        unsupported.push('비디오');
+    }
+    if (compatibility.screen === false) {
+        unsupported.push('화면 공유');
+    }
+
+    return unsupported.join(', ');
+};
 
 const createAssetCandidate = (label, dependentAssets, jsLibRoot, wasmPath = '/lib') => ({
     label,
@@ -251,11 +348,39 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
             console.log('Initializing Zoom SDK...');
             setIsClientInited(false);
 
+            try {
+                validateSdkEnvironment();
+            } catch (environmentError) {
+                console.error('Zoom SDK environment validation failed:', environmentError);
+                alert('Zoom SDK 실행 환경이 올바르게 구성되지 않았습니다: ' + environmentError.message);
+                onLeaveMeeting();
+                return;
+            }
+
+            const compatibility =
+                typeof ZoomVideo.checkSystemRequirements === 'function'
+                    ? ZoomVideo.checkSystemRequirements()
+                    : null;
+            const unsupportedFeatures = describeCompatibilityIssues(compatibility);
+            if (unsupportedFeatures) {
+                const message =
+                    '현재 사용 중인 브라우저에서는 다음 기능을 지원하지 않아 Zoom SDK를 실행할 수 없습니다: ' +
+                    unsupportedFeatures;
+                console.error(message, compatibility);
+                alert(message);
+                onLeaveMeeting();
+                return;
+            }
+
             for (const candidate of assetCandidates) {
+                const runtimeCandidate = resolveCandidateForRuntime(candidate);
+                if (!runtimeCandidate || !runtimeCandidate.jsLibRoot) {
+                    continue;
+                }
                 try {
-                    const dependentAssetsValue = candidate.dependentAssets || 'Global';
+                    const dependentAssetsValue = runtimeCandidate.dependentAssets || 'Global';
                     console.log(
-                        `Attempting Zoom SDK initialization using ${candidate.label} (${candidate.jsLibRoot}) with dependentAssets=${dependentAssetsValue}.`,
+                        `Attempting Zoom SDK initialization using ${runtimeCandidate.label} (${runtimeCandidate.jsLibRoot}) with dependentAssets=${dependentAssetsValue}.`,
                     );
                     if (typeof ZoomVideo.destroyClient === 'function') {
                         try {
@@ -269,19 +394,22 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
                     }
 
                     if (typeof ZoomVideo.setZoomJSLib === 'function') {
-                        if (candidate.wasmPath === null) {
-                            ZoomVideo.setZoomJSLib(candidate.jsLibRoot);
-                        } else if (candidate.wasmPath) {
-                            ZoomVideo.setZoomJSLib(candidate.jsLibRoot, candidate.wasmPath);
+                        if (runtimeCandidate.wasmPath === null) {
+                            ZoomVideo.setZoomJSLib(runtimeCandidate.jsLibRoot);
+                        } else if (runtimeCandidate.wasmPath) {
+                            ZoomVideo.setZoomJSLib(
+                                runtimeCandidate.jsLibRoot,
+                                runtimeCandidate.wasmPath,
+                            );
                         } else {
-                            ZoomVideo.setZoomJSLib(candidate.jsLibRoot);
+                            ZoomVideo.setZoomJSLib(runtimeCandidate.jsLibRoot);
                         }
                     }
 
                     let preloadErrorToReport = null;
                     if (typeof ZoomVideo.preloadDependentAssets === 'function') {
                         try {
-                            await ZoomVideo.preloadDependentAssets();
+                            await ZoomVideo.preloadDependentAssets(runtimeCandidate.jsLibRoot);
                         } catch (preloadError) {
                             preloadErrorToReport =
                                 preloadError instanceof Error
@@ -291,7 +419,7 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
                                               'Unknown error occurred while preloading Zoom SDK assets.',
                                       );
                             console.warn(
-                                `Failed to preload Zoom SDK dependent assets from ${candidate.label}:`,
+                                `Failed to preload Zoom SDK dependent assets from ${runtimeCandidate.label}:`,
                                 preloadErrorToReport,
                             );
                         }
@@ -312,14 +440,14 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
 
                     client.current = createdClient;
                     console.log(
-                        `Zoom SDK initialized successfully using ${candidate.label} (${candidate.jsLibRoot}).`,
+                        `Zoom SDK initialized successfully using ${runtimeCandidate.label} (${runtimeCandidate.jsLibRoot}).`,
                     );
                     setIsClientInited(true);
                     return;
                 } catch (candidateError) {
                     lastError = candidateError;
                     console.error(
-                        `Zoom SDK initialization failed for ${candidate.label} (${candidate.jsLibRoot}):`,
+                        `Zoom SDK initialization failed for ${runtimeCandidate.label} (${runtimeCandidate.jsLibRoot}):`,
                         candidateError,
                     );
                     if (typeof ZoomVideo.destroyClient === 'function') {

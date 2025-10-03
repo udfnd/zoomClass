@@ -9,6 +9,7 @@ const CONNECT_SRC_BASE = [
   'https://zoom.us',
   'https://*.zoom.us',
   'https://source.zoom.us',
+  'https://dmogdx0jrul3u.cloudfront.net',
   'https://api.zoom.us',
   'https://marketplace.zoom.us',
   'https://*.zoomgov.com',
