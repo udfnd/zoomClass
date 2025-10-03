@@ -3,7 +3,34 @@ import ZoomVideo, { SharePrivilege, VideoQuality } from '@zoom/videosdk';
 import { normalizeBackendUrl } from './utils/backend';
 
 const APP_KEY = process.env.ZOOM_SDK_KEY;
-const SDK_LIB_URL = process.env.ZOOM_SDK_LIB_URL || 'https://source.zoom.us/videosdk/2.1.10/lib';
+
+const normalizeDependentAssetsPath = (value) => {
+    if (!value) {
+        return 'Global';
+    }
+
+    const trimmedValue = value.trim();
+    if (!trimmedValue) {
+        return 'Global';
+    }
+
+    const lowerCased = trimmedValue.toLowerCase();
+    if (lowerCased === 'global') {
+        return 'Global';
+    }
+    if (lowerCased === 'cdn') {
+        return 'CDN';
+    }
+    if (lowerCased === 'cn') {
+        return 'CN';
+    }
+
+    return trimmedValue.endsWith('/') ? trimmedValue : `${trimmedValue}/`;
+};
+
+const SDK_DEPENDENT_ASSETS = normalizeDependentAssetsPath(
+    process.env.ZOOM_SDK_DEPENDENT_ASSETS || process.env.ZOOM_SDK_LIB_URL || '',
+);
 const DEFAULT_SHARE_DIMENSIONS = { width: 960, height: 540 };
 
 function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
@@ -47,11 +74,18 @@ function MeetingScreen({ sessionName, userName, backendUrl, onLeaveMeeting }) {
 
         try {
             console.log('Initializing Zoom SDK...');
-            ZoomVideo.setZoomJSLib(SDK_LIB_URL, '/lib');
-            await ZoomVideo.preLoadWasm();
-            await ZoomVideo.prepareWebSDK();
+            if (typeof ZoomVideo.preloadDependentAssets === 'function') {
+                try {
+                    ZoomVideo.preloadDependentAssets(SDK_DEPENDENT_ASSETS);
+                } catch (preloadError) {
+                    console.warn('Failed to preload Zoom SDK dependent assets:', preloadError);
+                }
+            }
             client.current = ZoomVideo.createClient();
-            await client.current.init('en-US', SDK_LIB_URL, { patchJsMedia: true });
+            const initResult = await client.current.init('en-US', SDK_DEPENDENT_ASSETS, { patchJsMedia: true });
+            if (initResult && typeof initResult === 'object') {
+                throw new Error(initResult.reason || 'Failed to initialize Zoom SDK');
+            }
             console.log('Zoom SDK initialized successfully.');
             setIsClientInited(true);
         } catch (error) {
