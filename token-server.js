@@ -22,6 +22,8 @@ const zoomAccountId = process.env.ZOOM_ACCOUNT_ID;
 const zoomClientId = process.env.ZOOM_CLIENT_ID;
 const zoomClientSecret = process.env.ZOOM_CLIENT_SECRET;
 
+const isZoomOAuthConfigured = () => Boolean(zoomAccountId && zoomClientId && zoomClientSecret);
+
 if (!supabaseRestUrl || !supabaseServiceRoleKey) {
     console.warn('[backend] Supabase URL or service role key is missing. Calendar endpoints will be disabled.');
 }
@@ -73,7 +75,7 @@ const ensureMeetingSdkConfigured = () => {
 };
 
 const ensureZoomOAuthConfigured = () => {
-    if (!zoomAccountId || !zoomClientId || !zoomClientSecret) {
+    if (!isZoomOAuthConfigured()) {
         throw new Error('ZOOM_ACCOUNT_ID, ZOOM_CLIENT_ID, ZOOM_CLIENT_SECRET 환경 변수를 설정해주세요.');
     }
 };
@@ -351,6 +353,11 @@ app.get('/join', (req, res) => {
     }
 });
 
+const generateFallbackMeetingNumber = () => {
+    const base = `${Date.now()}${Math.floor(1000 + Math.random() * 9000)}`;
+    return base.slice(-11);
+};
+
 app.post('/meeting/create', async (req, res) => {
     const { topic, hostName } = req.body || {};
 
@@ -359,9 +366,23 @@ app.post('/meeting/create', async (req, res) => {
     }
 
     try {
-        const meeting = await createZoomMeeting({ topic, hostName });
-        const meetingNumber = `${meeting.id}`;
-        const passcode = meeting.password || meeting.passcode || '';
+        let meeting = null;
+        let meetingNumber = '';
+        let passcode = '';
+        let joinUrl = '';
+        let startUrl = '';
+
+        if (isZoomOAuthConfigured()) {
+            meeting = await createZoomMeeting({ topic, hostName });
+            meetingNumber = `${meeting.id}`;
+            passcode = meeting.password || meeting.passcode || '';
+            joinUrl = meeting.join_url || '';
+            startUrl = meeting.start_url || '';
+        } else {
+            meetingNumber = generateFallbackMeetingNumber();
+            passcode = '';
+        }
+
         const signature = generateMeetingSdkSignature({ meetingNumber, role: 1 });
 
         const backendBase = `${req.protocol}://${req.get('host')}${req.baseUrl || ''}`.replace(/\/+$/, '');
@@ -399,11 +420,12 @@ app.post('/meeting/create', async (req, res) => {
             hostName,
             meetingNumber,
             passcode,
-            joinUrl: meeting.join_url,
-            startUrl: meeting.start_url,
+            joinUrl,
+            startUrl,
             sdkKey: SDK_KEY,
             signature,
             shareLink,
+            isZoomOAuthMeeting: isZoomOAuthConfigured(),
         });
     } catch (error) {
         console.error('[backend] Failed to create Zoom meeting:', error);
