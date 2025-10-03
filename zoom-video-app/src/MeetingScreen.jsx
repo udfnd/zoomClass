@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import ZoomVideo, { SharePrivilege, VideoQuality } from '@zoom/videosdk';
-import zoomVideoSdkPackageJson from '@zoom/videosdk/package.json';
 import { normalizeBackendUrl } from './utils/backend';
 
 const APP_KEY = process.env.ZOOM_SDK_KEY;
@@ -30,11 +29,6 @@ const resolveSdkVersion = () => {
     const sdkReportedVersion = sanitizeString(ZoomVideo?.VERSION);
     if (sdkReportedVersion) {
         return sdkReportedVersion;
-    }
-
-    const packageJsonVersion = sanitizeString(zoomVideoSdkPackageJson?.version);
-    if (packageJsonVersion) {
-        return packageJsonVersion;
     }
 
     return 'latest';
