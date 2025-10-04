@@ -232,7 +232,7 @@ const ensureZoomApiAccessConfigured = () => {
 const generateMeetingSdkSignature = ({ meetingNumber, role }) => {
     ensureMeetingSdkConfigured();
 
-    const normalizedMeetingNumber = `${meetingNumber}`.trim();
+    const normalizedMeetingNumber = `${meetingNumber}`.replace(/[^\d]/g, '').trim();
     if (!normalizedMeetingNumber) {
         throw new Error('회의 번호가 필요합니다.');
     }
@@ -243,7 +243,11 @@ const generateMeetingSdkSignature = ({ meetingNumber, role }) => {
     const hash = crypto.createHmac('sha256', SDK_SECRET).update(message).digest('base64');
     const signature = Buffer.from(
         `${SDK_KEY}.${normalizedMeetingNumber}.${timestamp}.${normalizedRole}.${hash}`,
-    ).toString('base64');
+    )
+        .toString('base64')
+        .replace(/=+$/, '')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_');
     return signature;
 };
 
