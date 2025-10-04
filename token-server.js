@@ -238,17 +238,24 @@ const generateMeetingSdkSignature = ({ meetingNumber, role }) => {
     }
 
     const normalizedRole = Number(role) === 1 ? 1 : 0;
-    const timestamp = Date.now() - 30000;
-    const message = Buffer.from(`${SDK_KEY}${normalizedMeetingNumber}${timestamp}${normalizedRole}`).toString('base64');
-    const hash = crypto.createHmac('sha256', SDK_SECRET).update(message).digest('base64');
-    const signature = Buffer.from(
-        `${SDK_KEY}.${normalizedMeetingNumber}.${timestamp}.${normalizedRole}.${hash}`,
-    )
-        .toString('base64')
-        .replace(/=+$/, '')
-        .replace(/\+/g, '-')
-        .replace(/\//g, '_');
-    return signature;
+    const issuedAt = Math.floor(Date.now() / 1000) - 30;
+    const expiresAt = issuedAt + 60 * 60 * 2;
+
+    const header = { alg: 'HS256', typ: 'JWT' };
+    const payload = {
+        sdkKey: SDK_KEY,
+        mn: normalizedMeetingNumber,
+        role: normalizedRole,
+        iat: issuedAt,
+        exp: expiresAt,
+        tokenExp: expiresAt,
+    };
+
+    const base64Header = Buffer.from(JSON.stringify(header)).toString('base64url');
+    const base64Payload = Buffer.from(JSON.stringify(payload)).toString('base64url');
+    const hash = crypto.createHmac('sha256', SDK_SECRET).update(`${base64Header}.${base64Payload}`).digest('base64url');
+
+    return `${base64Header}.${base64Payload}.${hash}`;
 };
 
 let zoomOAuthTokenCache = {
