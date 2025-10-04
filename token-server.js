@@ -236,6 +236,37 @@ const toBase64Url = (input) =>
         .replace(/\//g, '_')
         .replace(/=+$/, '');
 
+const hmacSha256Base64Url = (secret, data) =>
+    crypto.createHmac('sha256', secret).update(data).digest('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+const decodeBase64UrlJson = (segment) => {
+    if (!segment) {
+        return null;
+    }
+
+    const base64 = segment.replace(/-/g, '+').replace(/_/g, '/');
+    const padding = base64.length % 4 === 0 ? '' : '='.repeat(4 - (base64.length % 4));
+
+    const decoded = Buffer.from(base64 + padding, 'base64').toString('utf8');
+    try {
+        return JSON.parse(decoded);
+    } catch (error) {
+        throw new Error(`서명 payload를 디코딩하지 못했습니다: ${error.message}`);
+    }
+};
+
+const decodeMeetingSignature = (signature) => {
+    if (typeof signature !== 'string' || !signature.includes('.')) {
+        throw new Error('유효한 Meeting SDK 서명 형식이 아닙니다.');
+    }
+
+    const [encodedHeader, encodedPayload] = signature.split('.');
+    return {
+        header: decodeBase64UrlJson(encodedHeader),
+        payload: decodeBase64UrlJson(encodedPayload),
+    };
+};
+
 const generateMeetingSdkSignature = ({ meetingNumber, role }) => {
     ensureMeetingSdkConfigured();
 
@@ -245,15 +276,14 @@ const generateMeetingSdkSignature = ({ meetingNumber, role }) => {
     }
 
     const numericMeetingNumber = Number(normalizedMeetingNumber);
-    if (!Number.isFinite(numericMeetingNumber)) {
+    if (!Number.isSafeInteger(numericMeetingNumber)) {
         throw new Error('유효한 숫자 형태의 회의 번호가 필요합니다.');
     }
 
     const normalizedRole = Number(role) === 1 ? 1 : 0;
-    const issuedAt = Math.floor(Date.now() / 1000) - 30;
+    const issuedAt = Math.floor(Date.now() / 1000);
     const expiresAt = issuedAt + 60 * 60 * 2;
 
-    const header = { alg: 'HS256', typ: 'JWT' };
     const payload = {
         sdkKey: SDK_KEY,
         // Zoom Meeting SDK requires both sdkKey and appKey fields to be populated with the SDK key value
@@ -266,17 +296,12 @@ const generateMeetingSdkSignature = ({ meetingNumber, role }) => {
         tokenExp: expiresAt,
     };
 
-    const base64Header = toBase64Url(JSON.stringify(header));
-    const base64Payload = toBase64Url(JSON.stringify(payload));
-    const hash = crypto
-        .createHmac('sha256', SDK_SECRET)
-        .update(`${base64Header}.${base64Payload}`)
-        .digest('base64')
-        .replace(/\+/g, '-')
-        .replace(/\//g, '_')
-        .replace(/=+$/, '');
+    const header = { alg: 'HS256', typ: 'JWT' };
+    const encodedHeader = toBase64Url(JSON.stringify(header));
+    const encodedPayload = toBase64Url(JSON.stringify(payload));
+    const signature = hmacSha256Base64Url(SDK_SECRET, `${encodedHeader}.${encodedPayload}`);
 
-    return `${base64Header}.${base64Payload}.${hash}`;
+    return `${encodedHeader}.${encodedPayload}.${signature}`;
 };
 
 let zoomOAuthTokenCache = {
@@ -890,6 +915,7 @@ app.post('/meeting/create', async (req, res) => {
             });
         }
 
+        const includeSignatureDebug = Boolean(req.body?.debugSignature || req.body?.includeSignatureDetails);
         let signature;
         try {
             signature = generateMeetingSdkSignature({ meetingNumber, role: 1 });
@@ -936,7 +962,7 @@ app.post('/meeting/create', async (req, res) => {
             }
         }
 
-        return res.json({
+        const responseBody = {
             topic,
             hostName,
             meetingNumber,
@@ -955,7 +981,17 @@ app.post('/meeting/create', async (req, res) => {
             hostDisplayName: meeting?.hostDisplayName || '',
             hostZoomUserId: meeting?.hostZoomUserId || '',
             warnings,
-        });
+        };
+
+        if (includeSignatureDebug) {
+            try {
+                responseBody.signatureDetails = decodeMeetingSignature(signature);
+            } catch (debugError) {
+                responseBody.signatureDetailsError = debugError.message;
+            }
+        }
+
+        return res.json(responseBody);
     } catch (error) {
         console.error('[backend] Failed to create Zoom meeting:', error);
         return res.status(500).json({ error: 'Failed to create Zoom meeting.', details: error.message });
@@ -964,7 +1000,7 @@ app.post('/meeting/create', async (req, res) => {
 
 app.post('/meeting/signature', async (req, res) => {
     try {
-        const { meetingNumber, role } = req.body || {};
+        const { meetingNumber, role, debug, debugSignature, includeSignatureDetails } = req.body || {};
         if (!meetingNumber) {
             return res.status(400).json({ error: 'meetingNumber is required.' });
         }
@@ -1004,7 +1040,19 @@ app.post('/meeting/signature', async (req, res) => {
         }
 
         const signature = generateMeetingSdkSignature({ meetingNumber, role: normalizedRole });
-        return res.json({ signature, sdkKey: SDK_KEY, role: normalizedRole, zak: hostZak, hostEmail });
+
+        const responseBody = { signature, sdkKey: SDK_KEY, role: normalizedRole, zak: hostZak, hostEmail };
+
+        const includeDebug = Boolean(debug || debugSignature || includeSignatureDetails);
+        if (includeDebug) {
+            try {
+                responseBody.signatureDetails = decodeMeetingSignature(signature);
+            } catch (debugError) {
+                responseBody.signatureDetailsError = debugError.message;
+            }
+        }
+
+        return res.json(responseBody);
     } catch (error) {
         console.error('[backend] Failed to generate meeting signature:', error);
         return res.status(500).json({ error: 'Failed to generate meeting signature.', details: error.message });
