@@ -247,32 +247,87 @@ const generateMeetingSdkSignature = ({ meetingNumber, role }) => {
     return signature;
 };
 
-const fetchZoomOAuthAccessToken = async () => {
+let zoomOAuthTokenCache = {
+    token: '',
+    expiresAt: 0,
+};
+
+const resetZoomOAuthCache = () => {
+    zoomOAuthTokenCache = { token: '', expiresAt: 0 };
+};
+
+const fetchZoomOAuthAccessToken = async ({ forceRefresh = false } = {}) => {
     if (!isZoomOAuthConfigured()) {
         throw new Error('Zoom OAuth 자격 증명이 구성되어 있지 않습니다.');
     }
 
+    const now = Date.now();
+    if (!forceRefresh && zoomOAuthTokenCache.token && now < zoomOAuthTokenCache.expiresAt) {
+        return zoomOAuthTokenCache.token;
+    }
+
+    if (forceRefresh) {
+        resetZoomOAuthCache();
+    }
+
     const basicAuth = Buffer.from(`${zoomClientId}:${zoomClientSecret}`).toString('base64');
-    const response = await fetch(
-        `https://zoom.us/oauth/token?grant_type=account_credentials&account_id=${encodeURIComponent(zoomAccountId)}`,
-        {
-            method: 'POST',
-            headers: {
-                Authorization: `Basic ${basicAuth}`,
-            },
+    const requestBody = new URLSearchParams({
+        grant_type: 'account_credentials',
+        account_id: zoomAccountId,
+    });
+
+    const response = await fetch('https://zoom.us/oauth/token', {
+        method: 'POST',
+        headers: {
+            Authorization: `Basic ${basicAuth}`,
+            'Content-Type': 'application/x-www-form-urlencoded',
         },
-    );
+        body: requestBody.toString(),
+    });
+
+    const responseText = await response.text();
 
     if (!response.ok) {
-        const bodyText = await response.text();
-        throw new Error(`Zoom OAuth 토큰 발급 실패: ${response.status} ${response.statusText} - ${bodyText}`);
+        resetZoomOAuthCache();
+
+        let detailedMessage = `Zoom OAuth 토큰 발급 실패: ${response.status} ${response.statusText} - ${responseText}`;
+        try {
+            const errorPayload = responseText ? JSON.parse(responseText) : null;
+            if (errorPayload?.error === 'unsupported_grant_type') {
+                detailedMessage +=
+                    ' (grant_type=account_credentials 요청이 거부되었습니다. ' +
+                    'Server-to-Server OAuth 앱이 활성화되어 있고 account_id 값이 올바른지 확인해주세요.)';
+            }
+        } catch (parseError) {
+            // ignore JSON parse error – responseText will be included above
+        }
+
+        throw new Error(detailedMessage);
     }
 
-    const data = await response.json();
+    let data;
+    try {
+        data = responseText ? JSON.parse(responseText) : {};
+    } catch (parseError) {
+        throw new Error(`Zoom OAuth 응답을 JSON으로 파싱하지 못했습니다: ${parseError.message}`);
+    }
+
     if (!data.access_token) {
+        resetZoomOAuthCache();
         throw new Error('Zoom OAuth 응답에 access_token이 없습니다.');
     }
-    return data.access_token;
+
+    const expiresInSeconds = Number(data.expires_in);
+    const expiresInMs = Number.isFinite(expiresInSeconds) ? Math.max(0, expiresInSeconds * 1000) : 0;
+    const safetyWindowMs = Math.min(60000, Math.floor(expiresInMs * 0.1));
+    const computedExpiry = Date.now() + Math.max(0, expiresInMs - safetyWindowMs);
+
+    zoomOAuthTokenCache = {
+        token: data.access_token,
+        expiresAt: computedExpiry,
+    };
+
+    return zoomOAuthTokenCache.token;
 };
 
 const createZoomJwtToken = () => {
@@ -293,9 +348,9 @@ const createZoomJwtToken = () => {
     return `${header}.${payload}.${signature}`;
 };
 
-const getZoomApiAuthInfo = async () => {
+const getZoomApiAuthInfo = async ({ forceRefresh = false } = {}) => {
     if (isZoomOAuthConfigured()) {
-        const accessToken = await fetchZoomOAuthAccessToken();
+        const accessToken = await fetchZoomOAuthAccessToken({ forceRefresh });
         return { type: 'oauth', token: accessToken, headerValue: `Bearer ${accessToken}` };
     }
 
@@ -310,13 +365,28 @@ const getZoomApiAuthInfo = async () => {
 const fetchZoomZakToken = async (authInfo) => {
     ensureZoomApiAccessConfigured();
 
-    const resolvedAuthInfo = authInfo || (await getZoomApiAuthInfo());
+    let resolvedAuthInfo = authInfo || (await getZoomApiAuthInfo());
 
-    const response = await fetch('https://api.zoom.us/v2/users/me/token?type=zak', {
-        headers: {
-            Authorization: resolvedAuthInfo.headerValue,
-        },
-    });
+    const performZakRequest = (authorizationHeader) =>
+        fetch('https://api.zoom.us/v2/users/me/token?type=zak', {
+            headers: {
+                Authorization: authorizationHeader,
+            },
+        });
+
+    let response = await performZakRequest(resolvedAuthInfo.headerValue);
+
+    if (response.status === 401 && resolvedAuthInfo.type === 'oauth') {
+        try {
+            const refreshedAuthInfo = await getZoomApiAuthInfo({ forceRefresh: true });
+            response = await performZakRequest(refreshedAuthInfo.headerValue);
+            if (response.ok) {
+                resolvedAuthInfo = refreshedAuthInfo;
+            }
+        } catch (refreshError) {
+            console.error('[backend] Failed to refresh Zoom OAuth token after 401 ZAK response:', refreshError);
+        }
+    }
 
     if (!response.ok) {
         const bodyText = await response.text();
@@ -408,7 +478,7 @@ const createZoomMeeting = async ({ topic, hostName }) => {
 
     if (response.status === 401 && authInfo.type === 'oauth') {
         try {
-            const refreshedAuthInfo = await getZoomApiAuthInfo();
+            const refreshedAuthInfo = await getZoomApiAuthInfo({ forceRefresh: true });
             response = await performCreateRequest(refreshedAuthInfo.headerValue);
             if (response.ok) {
                 authInfo = refreshedAuthInfo;
