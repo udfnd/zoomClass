@@ -3,6 +3,123 @@ const express = require('express');
 const crypto = require('crypto');
 const cors = require('cors');
 const os = require('os');
+const http = require('http');
+const https = require('https');
+
+const createNativeFetchFallback = () => {
+    const normalizeHeaders = (headersInit = {}) => {
+        if (!headersInit) {
+            return {};
+        }
+
+        if (Array.isArray(headersInit)) {
+            return headersInit.reduce((acc, [key, value]) => {
+                if (key) {
+                    acc[key] = value;
+                }
+                return acc;
+            }, {});
+        }
+
+        if (headersInit && typeof headersInit === 'object') {
+            return { ...headersInit };
+        }
+
+        return {};
+    };
+
+    return (input, init = {}) => {
+        const targetUrl = typeof input === 'string' ? input : input?.url || input?.href;
+        if (!targetUrl) {
+            return Promise.reject(new TypeError('A valid URL must be provided to fetch.'));
+        }
+
+        const url = new URL(targetUrl);
+        const isHttps = url.protocol === 'https:';
+        const transport = isHttps ? https : http;
+        const method = init.method || 'GET';
+        const headers = normalizeHeaders(init.headers);
+
+        return new Promise((resolve, reject) => {
+            const requestOptions = {
+                method,
+                headers,
+                hostname: url.hostname,
+                port: url.port || (isHttps ? 443 : 80),
+                path: `${url.pathname}${url.search}`,
+            };
+
+            const req = transport.request(requestOptions, (res) => {
+                const chunks = [];
+                res.on('data', (chunk) => chunks.push(chunk));
+                res.on('end', () => {
+                    const buffer = Buffer.concat(chunks);
+                    const textData = buffer.toString('utf8');
+                    const response = {
+                        ok: res.statusCode >= 200 && res.statusCode < 300,
+                        status: res.statusCode || 0,
+                        statusText: res.statusMessage || '',
+                        headers: res.headers,
+                        url: url.toString(),
+                        json: async () => {
+                            if (!textData) {
+                                return {};
+                            }
+                            try {
+                                return JSON.parse(textData);
+                            } catch (parseError) {
+                                throw new Error(`Failed to parse JSON response: ${parseError.message}`);
+                            }
+                        },
+                        text: async () => textData,
+                    };
+                    resolve(response);
+                });
+                res.on('error', reject);
+            });
+
+            req.on('error', reject);
+
+            if (init.body) {
+                const body = init.body;
+                if (Buffer.isBuffer(body) || typeof body === 'string') {
+                    req.write(body);
+                } else if (typeof body === 'object') {
+                    const serialized = JSON.stringify(body);
+                    if (!headers['Content-Type'] && !headers['content-type']) {
+                        req.setHeader('Content-Type', 'application/json');
+                    }
+                    req.write(serialized);
+                }
+            }
+
+            req.end();
+        });
+    };
+};
+
+let cachedFetchImplementation =
+    typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null;
+
+const getFetchImplementation = async () => {
+    if (cachedFetchImplementation) {
+        return cachedFetchImplementation;
+    }
+
+    try {
+        const { default: nodeFetch } = await import('node-fetch');
+        cachedFetchImplementation = nodeFetch;
+        return cachedFetchImplementation;
+    } catch (importError) {
+        console.warn(
+            `[backend] node-fetch module not available (${importError.message}). Using built-in HTTP(S) fallback for fetch.`,
+        );
+        cachedFetchImplementation = createNativeFetchFallback();
+        return cachedFetchImplementation;
+    }
+};
+
+const fetch = (...args) => getFetchImplementation().then((impl) => impl(...args));
 
 const app = express();
 const port = process.env.PORT || 4000;
@@ -476,30 +593,48 @@ app.get('/join', (req, res) => {
     }
 });
 
-const generateFallbackMeetingNumber = () => {
-    const base = `${Date.now()}${Math.floor(1000 + Math.random() * 9000)}`;
-    return base.slice(-11);
-};
-
 app.post('/meeting/create', async (req, res) => {
-    const { topic, hostName } = req.body || {};
+    const { topic: rawTopic, hostName: rawHostName } = req.body || {};
+
+    const topic = typeof rawTopic === 'string' ? rawTopic.trim() : '';
+    const hostName = typeof rawHostName === 'string' ? rawHostName.trim() : '';
 
     if (!topic || !hostName) {
         return res.status(400).json({ error: 'topic and hostName are required.' });
     }
 
+    if (!SDK_KEY || !SDK_SECRET) {
+        return res.status(500).json({
+            error: 'Zoom Meeting SDK credentials are not configured on the backend.',
+            details: 'Set ZOOM_SDK_KEY and ZOOM_SDK_SECRET environment variables.',
+        });
+    }
+
+    if (!isZoomApiAccessConfigured()) {
+        return res.status(400).json({
+            error: 'Zoom API credentials are not configured on the backend.',
+            details:
+                'Set ZOOM_ACCOUNT_ID, ZOOM_CLIENT_ID, ZOOM_CLIENT_SECRET for OAuth or ZOOM_API_KEY and ZOOM_API_SECRET for legacy JWT.',
+        });
+    }
+
     try {
-        let meeting = null;
-        let meetingNumber = '';
+        const warnings = [];
+
+        let meeting;
+        let meetingNumber;
         let passcode = '';
         let joinUrl = '';
         let startUrl = '';
         let hostZak = '';
         let hostZakExpiresIn = null;
-
         let zakSource = null;
-        if (isZoomApiAccessConfigured()) {
-            const { meeting: createdMeeting, zak, zakExpiresIn, zakSource: source } = await createZoomMeeting({ topic, hostName });
+
+        try {
+            const { meeting: createdMeeting, zak, zakExpiresIn, zakSource: source } = await createZoomMeeting({
+                topic,
+                hostName,
+            });
             meeting = createdMeeting;
             meetingNumber = `${createdMeeting.id}`;
             passcode = createdMeeting.password || createdMeeting.passcode || '';
@@ -508,12 +643,24 @@ app.post('/meeting/create', async (req, res) => {
             hostZak = zak || '';
             hostZakExpiresIn = zakExpiresIn || null;
             zakSource = source || null;
-        } else {
-            meetingNumber = generateFallbackMeetingNumber();
-            passcode = '';
+        } catch (meetingError) {
+            console.error('[backend] Zoom API meeting creation failed.', meetingError);
+            return res.status(502).json({
+                error: 'Failed to create Zoom meeting via Zoom API.',
+                details: meetingError.message,
+            });
         }
 
-        const signature = generateMeetingSdkSignature({ meetingNumber, role: 1 });
+        let signature;
+        try {
+            signature = generateMeetingSdkSignature({ meetingNumber, role: 1 });
+        } catch (signatureError) {
+            console.error('[backend] Failed to generate meeting signature:', signatureError);
+            return res.status(500).json({
+                error: 'Failed to generate meeting signature.',
+                details: signatureError.message,
+            });
+        }
 
         const backendBase = `${req.protocol}://${req.get('host')}${req.baseUrl || ''}`.replace(/\/+$/, '');
         const shareLink = buildJoinHelperUrl(req, {
@@ -542,6 +689,11 @@ app.post('/meeting/create', async (req, res) => {
                 });
             } catch (storeError) {
                 console.warn('[backend] Failed to store meeting in Supabase:', storeError);
+                warnings.push({
+                    type: 'supabase_storage',
+                    message: 'Failed to record meeting in Supabase. Check backend configuration.',
+                    details: storeError.message,
+                });
             }
         }
 
@@ -560,6 +712,7 @@ app.post('/meeting/create', async (req, res) => {
             zak: hostZak,
             zakExpiresIn: hostZakExpiresIn,
             zakSource,
+            warnings,
         });
     } catch (error) {
         console.error('[backend] Failed to create Zoom meeting:', error);

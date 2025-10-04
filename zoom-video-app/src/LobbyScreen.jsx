@@ -139,10 +139,38 @@ function LobbyScreen({
             const payload = await response.json().catch(() => ({}));
 
             if (!response.ok) {
-                throw new Error(payload.error || payload.message || '수업 생성 요청이 실패했습니다.');
+                const detailMessage = payload.details ? ` (${payload.details})` : '';
+                throw new Error(
+                    (payload.error || payload.message || '수업 생성 요청이 실패했습니다.') + detailMessage,
+                );
             }
 
             const meeting = payload.meeting || payload;
+            const warnings = Array.isArray(payload.warnings)
+                ? payload.warnings
+                : Array.isArray(meeting.warnings)
+                ? meeting.warnings
+                : [];
+
+            if (warnings.length > 0) {
+                warnings.forEach((warning) => {
+                    const typeLabel = warning?.type ? `[${warning.type}]` : '[warning]';
+                    const message = warning?.message || '백엔드에서 경고가 전달되었습니다.';
+                    const details = warning?.details ? ` (${warning.details})` : '';
+                    console.warn(`${typeLabel} ${message}${details}`);
+                });
+            }
+
+            if (payload.zoomMeetingCreated === false) {
+                const fatalWarning =
+                    warnings.find((warning) => warning?.type === 'zoom_meeting_creation') ||
+                    warnings.find((warning) => warning?.type === 'zoom_api_configuration');
+                const message =
+                    fatalWarning?.message || 'Zoom 회의를 생성하지 못했습니다. 서버 구성을 확인해주세요.';
+                const details = fatalWarning?.details ? ` (${fatalWarning.details})` : '';
+                throw new Error(`${message}${details}`);
+            }
+
             const meetingNumber = meeting.meetingNumber || meeting.meeting_id || meeting.id;
             const sdkKey = payload.sdkKey || meeting.sdkKey || '';
             const signature = meeting.signature || meeting.hostSignature;
