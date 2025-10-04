@@ -229,12 +229,24 @@ const ensureZoomApiAccessConfigured = () => {
     }
 };
 
+const toBase64Url = (input) =>
+    Buffer.from(input)
+        .toString('base64')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/, '');
+
 const generateMeetingSdkSignature = ({ meetingNumber, role }) => {
     ensureMeetingSdkConfigured();
 
     const normalizedMeetingNumber = `${meetingNumber}`.replace(/[^\d]/g, '').trim();
     if (!normalizedMeetingNumber) {
         throw new Error('회의 번호가 필요합니다.');
+    }
+
+    const numericMeetingNumber = Number(normalizedMeetingNumber);
+    if (!Number.isFinite(numericMeetingNumber)) {
+        throw new Error('유효한 숫자 형태의 회의 번호가 필요합니다.');
     }
 
     const normalizedRole = Number(role) === 1 ? 1 : 0;
@@ -244,16 +256,22 @@ const generateMeetingSdkSignature = ({ meetingNumber, role }) => {
     const header = { alg: 'HS256', typ: 'JWT' };
     const payload = {
         sdkKey: SDK_KEY,
-        mn: normalizedMeetingNumber,
+        mn: numericMeetingNumber,
         role: normalizedRole,
         iat: issuedAt,
         exp: expiresAt,
         tokenExp: expiresAt,
     };
 
-    const base64Header = Buffer.from(JSON.stringify(header)).toString('base64url');
-    const base64Payload = Buffer.from(JSON.stringify(payload)).toString('base64url');
-    const hash = crypto.createHmac('sha256', SDK_SECRET).update(`${base64Header}.${base64Payload}`).digest('base64url');
+    const base64Header = toBase64Url(JSON.stringify(header));
+    const base64Payload = toBase64Url(JSON.stringify(payload));
+    const hash = crypto
+        .createHmac('sha256', SDK_SECRET)
+        .update(`${base64Header}.${base64Payload}`)
+        .digest('base64')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/, '');
 
     return `${base64Header}.${base64Payload}.${hash}`;
 };
