@@ -152,6 +152,11 @@ const buildCspHeaderValue = () => {
       'ws:',
       'wss:',
     ]),
+    'worker-src': uniqueTokens([
+      "'self'",
+      'blob:',
+      'data:',
+    ]),
   };
 
   return `${Object.entries(directives)
