@@ -21,8 +21,12 @@ const supabaseRestUrl = supabaseUrl ? `${supabaseUrl.replace(/\/$/, '')}/rest/v1
 const zoomAccountId = process.env.ZOOM_ACCOUNT_ID;
 const zoomClientId = process.env.ZOOM_CLIENT_ID;
 const zoomClientSecret = process.env.ZOOM_CLIENT_SECRET;
+const zoomApiKey = process.env.ZOOM_API_KEY;
+const zoomApiSecret = process.env.ZOOM_API_SECRET;
 
 const isZoomOAuthConfigured = () => Boolean(zoomAccountId && zoomClientId && zoomClientSecret);
+const isZoomJwtConfigured = () => Boolean(zoomApiKey && zoomApiSecret);
+const isZoomApiAccessConfigured = () => isZoomOAuthConfigured() || isZoomJwtConfigured();
 
 if (!supabaseRestUrl || !supabaseServiceRoleKey) {
     console.warn('[backend] Supabase URL or service role key is missing. Calendar endpoints will be disabled.');
@@ -74,9 +78,11 @@ const ensureMeetingSdkConfigured = () => {
     }
 };
 
-const ensureZoomOAuthConfigured = () => {
-    if (!isZoomOAuthConfigured()) {
-        throw new Error('ZOOM_ACCOUNT_ID, ZOOM_CLIENT_ID, ZOOM_CLIENT_SECRET 환경 변수를 설정해주세요.');
+const ensureZoomApiAccessConfigured = () => {
+    if (!isZoomApiAccessConfigured()) {
+        throw new Error(
+            'Zoom API 호출을 위해 ZOOM_ACCOUNT_ID, ZOOM_CLIENT_ID, ZOOM_CLIENT_SECRET 또는 ZOOM_API_KEY, ZOOM_API_SECRET 값을 설정해주세요.',
+        );
     }
 };
 
@@ -98,8 +104,10 @@ const generateMeetingSdkSignature = ({ meetingNumber, role }) => {
     return signature;
 };
 
-const fetchZoomAccessToken = async () => {
-    ensureZoomOAuthConfigured();
+const fetchZoomOAuthAccessToken = async () => {
+    if (!isZoomOAuthConfigured()) {
+        throw new Error('Zoom OAuth 자격 증명이 구성되어 있지 않습니다.');
+    }
 
     const basicAuth = Buffer.from(`${zoomClientId}:${zoomClientSecret}`).toString('base64');
     const response = await fetch(
@@ -124,16 +132,46 @@ const fetchZoomAccessToken = async () => {
     return data.access_token;
 };
 
-const fetchZoomZakToken = async (accessToken) => {
-    ensureZoomOAuthConfigured();
-
-    if (!accessToken) {
-        accessToken = await fetchZoomAccessToken();
+const createZoomJwtToken = () => {
+    if (!isZoomJwtConfigured()) {
+        throw new Error('Zoom JWT 자격 증명이 구성되어 있지 않습니다.');
     }
+
+    const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+    const payload = Buffer.from(
+        JSON.stringify({
+            iss: zoomApiKey,
+            exp: Math.floor(Date.now() / 1000) + 60 * 5,
+            iat: Math.floor(Date.now() / 1000),
+        }),
+    ).toString('base64url');
+
+    const signature = crypto.createHmac('sha256', zoomApiSecret).update(`${header}.${payload}`).digest('base64url');
+    return `${header}.${payload}.${signature}`;
+};
+
+const getZoomApiAuthInfo = async () => {
+    if (isZoomOAuthConfigured()) {
+        const accessToken = await fetchZoomOAuthAccessToken();
+        return { type: 'oauth', token: accessToken, headerValue: `Bearer ${accessToken}` };
+    }
+
+    if (isZoomJwtConfigured()) {
+        const jwt = createZoomJwtToken();
+        return { type: 'jwt', token: jwt, headerValue: `Bearer ${jwt}` };
+    }
+
+    throw new Error('Zoom API 호출 자격 증명이 구성되어 있지 않습니다.');
+};
+
+const fetchZoomZakToken = async (authInfo) => {
+    ensureZoomApiAccessConfigured();
+
+    const resolvedAuthInfo = authInfo || (await getZoomApiAuthInfo());
 
     const response = await fetch('https://api.zoom.us/v2/users/me/token?type=zak', {
         headers: {
-            Authorization: `Bearer ${accessToken}`,
+            Authorization: resolvedAuthInfo.headerValue,
         },
     });
 
@@ -154,7 +192,9 @@ const fetchZoomZakToken = async (accessToken) => {
 };
 
 const createZoomMeeting = async ({ topic, hostName }) => {
-    const accessToken = await fetchZoomAccessToken();
+    ensureZoomApiAccessConfigured();
+
+    const authInfo = await getZoomApiAuthInfo();
 
     const payload = {
         topic: topic || 'ZoomClass Session',
@@ -172,7 +212,7 @@ const createZoomMeeting = async ({ topic, hostName }) => {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${accessToken}`,
+            Authorization: authInfo.headerValue,
         },
         body: JSON.stringify(payload),
     });
@@ -189,7 +229,7 @@ const createZoomMeeting = async ({ topic, hostName }) => {
 
     let zakInfo = null;
     try {
-        zakInfo = await fetchZoomZakToken(accessToken);
+        zakInfo = await fetchZoomZakToken(authInfo);
     } catch (zakError) {
         console.warn('[backend] Failed to issue ZAK token for host session:', zakError);
     }
@@ -414,7 +454,7 @@ app.post('/meeting/create', async (req, res) => {
         let hostZak = '';
         let hostZakExpiresIn = null;
 
-        if (isZoomOAuthConfigured()) {
+        if (isZoomApiAccessConfigured()) {
             const { meeting: createdMeeting, zak, zakExpiresIn } = await createZoomMeeting({ topic, hostName });
             meeting = createdMeeting;
             meetingNumber = `${createdMeeting.id}`;
@@ -471,6 +511,7 @@ app.post('/meeting/create', async (req, res) => {
             signature,
             shareLink,
             isZoomOAuthMeeting: isZoomOAuthConfigured(),
+            isZoomApiMeeting: isZoomApiAccessConfigured(),
             zak: hostZak,
             zakExpiresIn: hostZakExpiresIn,
         });
@@ -489,9 +530,9 @@ app.post('/meeting/signature', async (req, res) => {
 
         const normalizedRole = Number(role) === 1 ? 1 : 0;
 
-        if (normalizedRole === 1 && !isZoomOAuthConfigured()) {
+        if (normalizedRole === 1 && !isZoomApiAccessConfigured()) {
             return res.status(400).json({
-                error: '호스트 서명을 생성하려면 Zoom OAuth 자격 증명을 구성해야 합니다.',
+                error: '호스트 서명을 생성하려면 Zoom OAuth 자격 증명 또는 Zoom API Key/Secret을 구성해야 합니다.',
             });
         }
 
@@ -503,7 +544,7 @@ app.post('/meeting/signature', async (req, res) => {
             } catch (zakError) {
                 console.error('[backend] Failed to issue ZAK token for host signature:', zakError);
                 return res.status(500).json({
-                    error: 'Failed to issue host ZAK token. Zoom OAuth 설정을 확인해주세요.',
+                    error: 'Failed to issue host ZAK token. Zoom OAuth 또는 Zoom API Key/Secret 구성을 확인해주세요.',
                     details: zakError.message,
                 });
             }

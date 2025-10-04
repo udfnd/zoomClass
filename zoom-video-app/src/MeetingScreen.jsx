@@ -123,7 +123,7 @@ export default function MeetingScreen({ meetingContext, onLeaveMeeting }) {
 
         if (context.role === 1 && !context.zak) {
             setError(
-                '호스트로 참가하려면 Zoom OAuth로 발급된 ZAK 토큰이 필요합니다. 백엔드의 ZOOM_ACCOUNT_ID, ZOOM_CLIENT_ID, ZOOM_CLIENT_SECRET 설정을 확인해주세요.',
+                '호스트로 참가하려면 Zoom에서 발급된 ZAK 토큰이 필요합니다. 백엔드에 ZOOM_ACCOUNT_ID, ZOOM_CLIENT_ID, ZOOM_CLIENT_SECRET 또는 ZOOM_API_KEY, ZOOM_API_SECRET을 설정했는지 확인해주세요.',
             );
             setStatusKey('error');
             return;
