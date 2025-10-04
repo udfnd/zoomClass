@@ -48,6 +48,8 @@ export default function MeetingScreen({ meetingContext, onLeaveMeeting }) {
                 joinUrl: '',
                 role: 0,
                 zak: '',
+                hostEmail: '',
+                userEmail: '',
             };
         }
 
@@ -60,6 +62,8 @@ export default function MeetingScreen({ meetingContext, onLeaveMeeting }) {
             joinUrl: meetingContext.joinUrl || '',
             role: meetingContext.role ?? 0,
             zak: meetingContext.zak || '',
+            hostEmail: meetingContext.hostEmail || meetingContext.userEmail || '',
+            userEmail: meetingContext.userEmail || '',
         };
     }, [meetingContext]);
 
@@ -129,6 +133,14 @@ export default function MeetingScreen({ meetingContext, onLeaveMeeting }) {
             return;
         }
 
+        if (context.role === 1 && !context.hostEmail) {
+            setError(
+                '호스트 계정 이메일 정보를 찾지 못했습니다. Zoom Server-to-Server OAuth 권한이 meeting:read:admin, user:read:admin 등을 포함하는지 확인해주세요.',
+            );
+            setStatusKey('error');
+            return;
+        }
+
         let cancelled = false;
 
         const joinMeeting = async () => {
@@ -163,8 +175,15 @@ export default function MeetingScreen({ meetingContext, onLeaveMeeting }) {
                     userName: context.userName,
                 };
 
-                if (context.role === 1 && context.zak) {
-                    joinOptions.zak = context.zak;
+                if (context.role === 1) {
+                    if (context.zak) {
+                        joinOptions.zak = context.zak;
+                    }
+                    if (context.hostEmail) {
+                        joinOptions.userEmail = context.hostEmail;
+                    }
+                } else if (context.userEmail) {
+                    joinOptions.userEmail = context.userEmail;
                 }
 
                 await clientRef.current.join(joinOptions);

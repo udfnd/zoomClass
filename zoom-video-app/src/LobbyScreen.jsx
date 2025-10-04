@@ -175,13 +175,15 @@ function LobbyScreen({
             const sdkKey = payload.sdkKey || meeting.sdkKey || '';
             const signature = meeting.signature || meeting.hostSignature;
             const zak = meeting.zak || meeting.hostZak || payload.zak || '';
+            const hostEmail = payload.hostEmail || meeting.hostEmail || '';
 
             let resolvedSignature = signature;
             let resolvedZak = zak;
             let resolvedRole = 1;
+            let resolvedHostEmail = hostEmail;
             let fallbackNotice = '';
 
-            if (!resolvedZak) {
+            if (!resolvedZak || !resolvedHostEmail) {
                 try {
                     const fallbackResponse = await fetch(`${sanitizedBackendUrl}/meeting/signature`, {
                         method: 'POST',
@@ -204,10 +206,15 @@ function LobbyScreen({
                     resolvedSignature = fallbackPayload.signature;
                     resolvedZak = fallbackPayload.zak || '';
                     resolvedRole = 0;
+                    resolvedHostEmail = '';
                     fallbackNotice =
-                        '백엔드에서 호스트용 ZAK 토큰이 제공되지 않아 참가자 권한으로 수업에 입장합니다. ' +
+                        '백엔드에서 호스트용 세션 정보가 완전하지 않아 참가자 권한으로 수업에 입장합니다. ' +
                         '서버에 ZOOM_ACCOUNT_ID, ZOOM_CLIENT_ID, ZOOM_CLIENT_SECRET 값을 추가해 Zoom Server-to-Server OAuth를 구성하거나 ' +
                         'ZOOM_API_KEY, ZOOM_API_SECRET(더 이상 권장되지 않음)을 설정한 뒤 백엔드를 재시작하면 호스트로 입장할 수 있습니다.';
+                    if (!hostEmail) {
+                        fallbackNotice +=
+                            '\n(참고: Zoom 호스트 이메일을 가져오지 못했습니다. Zoom API 권한 meeting:read:admin, user:read:admin 등이 부여되어 있는지 확인해주세요.)';
+                    }
                 } catch (fallbackError) {
                     console.warn('Failed to fallback to participant signature:', fallbackError);
                 }
@@ -234,6 +241,8 @@ function LobbyScreen({
                     startUrl: meeting.startUrl || meeting.start_url || '',
                     zak: resolvedZak,
                     role: resolvedRole,
+                    hostEmail: resolvedHostEmail,
+                    userEmail: resolvedHostEmail,
                 },
                 sanitizedBackendUrl,
             );
@@ -316,6 +325,8 @@ function LobbyScreen({
                     shareLink: joinLinkInfo.joinUrl,
                     zak: payload.zak || '',
                     role: 0,
+                    hostEmail: payload.hostEmail || '',
+                    userEmail: '',
                 },
                 backendForJoin,
             );
