@@ -145,6 +145,7 @@ function LobbyScreen({
             const meeting = payload.meeting || payload;
             const meetingNumber = meeting.meetingNumber || meeting.meeting_id || meeting.id;
             const signature = meeting.signature || meeting.hostSignature;
+            const zak = meeting.zak || meeting.hostZak || payload.zak || '';
 
             if (!meetingNumber || !signature || !meeting.sdkKey) {
                 throw new Error('백엔드에서 필요한 회의 정보를 받지 못했습니다.');
@@ -165,6 +166,7 @@ function LobbyScreen({
                     joinUrl: meeting.joinUrl || meeting.join_url || '',
                     shareLink: meeting.shareLink || meeting.share_link || meeting.joinHelperUrl || payload.shareLink,
                     startUrl: meeting.startUrl || meeting.start_url || '',
+                    zak,
                     role: 1,
                 },
                 sanitizedBackendUrl,
@@ -242,6 +244,7 @@ function LobbyScreen({
                     sdkKey: payload.sdkKey,
                     joinUrl: joinLinkInfo.joinUrl,
                     shareLink: joinLinkInfo.joinUrl,
+                    zak: payload.zak || '',
                     role: 0,
                 },
                 backendForJoin,

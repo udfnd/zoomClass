@@ -124,6 +124,35 @@ const fetchZoomAccessToken = async () => {
     return data.access_token;
 };
 
+const fetchZoomZakToken = async (accessToken) => {
+    ensureZoomOAuthConfigured();
+
+    if (!accessToken) {
+        accessToken = await fetchZoomAccessToken();
+    }
+
+    const response = await fetch('https://api.zoom.us/v2/users/me/token?type=zak', {
+        headers: {
+            Authorization: `Bearer ${accessToken}`,
+        },
+    });
+
+    if (!response.ok) {
+        const bodyText = await response.text();
+        throw new Error(`Zoom ZAK 토큰 발급 실패: ${response.status} ${response.statusText} - ${bodyText}`);
+    }
+
+    const data = await response.json();
+    if (!data || !data.token) {
+        throw new Error('Zoom ZAK 응답에 token 필드가 없습니다.');
+    }
+
+    return {
+        zak: data.token,
+        expiresIn: data.expires_in || null,
+    };
+};
+
 const createZoomMeeting = async ({ topic, hostName }) => {
     const accessToken = await fetchZoomAccessToken();
 
@@ -158,7 +187,18 @@ const createZoomMeeting = async ({ topic, hostName }) => {
         throw new Error('Zoom 회의 생성 응답에 회의 ID가 없습니다.');
     }
 
-    return data;
+    let zakInfo = null;
+    try {
+        zakInfo = await fetchZoomZakToken(accessToken);
+    } catch (zakError) {
+        console.warn('[backend] Failed to issue ZAK token for host session:', zakError);
+    }
+
+    return {
+        meeting: data,
+        zak: zakInfo?.zak || '',
+        zakExpiresIn: zakInfo?.expiresIn || null,
+    };
 };
 
 const buildJoinHelperUrl = (req, { meetingNumber, passcode, topic, hostName, backendBase }) => {
@@ -371,13 +411,18 @@ app.post('/meeting/create', async (req, res) => {
         let passcode = '';
         let joinUrl = '';
         let startUrl = '';
+        let hostZak = '';
+        let hostZakExpiresIn = null;
 
         if (isZoomOAuthConfigured()) {
-            meeting = await createZoomMeeting({ topic, hostName });
-            meetingNumber = `${meeting.id}`;
-            passcode = meeting.password || meeting.passcode || '';
-            joinUrl = meeting.join_url || '';
-            startUrl = meeting.start_url || '';
+            const { meeting: createdMeeting, zak, zakExpiresIn } = await createZoomMeeting({ topic, hostName });
+            meeting = createdMeeting;
+            meetingNumber = `${createdMeeting.id}`;
+            passcode = createdMeeting.password || createdMeeting.passcode || '';
+            joinUrl = createdMeeting.join_url || '';
+            startUrl = createdMeeting.start_url || '';
+            hostZak = zak || '';
+            hostZakExpiresIn = zakExpiresIn || null;
         } else {
             meetingNumber = generateFallbackMeetingNumber();
             passcode = '';
@@ -426,6 +471,8 @@ app.post('/meeting/create', async (req, res) => {
             signature,
             shareLink,
             isZoomOAuthMeeting: isZoomOAuthConfigured(),
+            zak: hostZak,
+            zakExpiresIn: hostZakExpiresIn,
         });
     } catch (error) {
         console.error('[backend] Failed to create Zoom meeting:', error);
@@ -433,7 +480,7 @@ app.post('/meeting/create', async (req, res) => {
     }
 });
 
-app.post('/meeting/signature', (req, res) => {
+app.post('/meeting/signature', async (req, res) => {
     try {
         const { meetingNumber, role } = req.body || {};
         if (!meetingNumber) {
@@ -441,8 +488,29 @@ app.post('/meeting/signature', (req, res) => {
         }
 
         const normalizedRole = Number(role) === 1 ? 1 : 0;
+
+        if (normalizedRole === 1 && !isZoomOAuthConfigured()) {
+            return res.status(400).json({
+                error: '호스트 서명을 생성하려면 Zoom OAuth 자격 증명을 구성해야 합니다.',
+            });
+        }
+
+        let hostZak = '';
+        if (normalizedRole === 1) {
+            try {
+                const { zak } = await fetchZoomZakToken();
+                hostZak = zak;
+            } catch (zakError) {
+                console.error('[backend] Failed to issue ZAK token for host signature:', zakError);
+                return res.status(500).json({
+                    error: 'Failed to issue host ZAK token. Zoom OAuth 설정을 확인해주세요.',
+                    details: zakError.message,
+                });
+            }
+        }
+
         const signature = generateMeetingSdkSignature({ meetingNumber, role: normalizedRole });
-        return res.json({ signature, sdkKey: SDK_KEY, role: normalizedRole });
+        return res.json({ signature, sdkKey: SDK_KEY, role: normalizedRole, zak: hostZak });
     } catch (error) {
         console.error('[backend] Failed to generate meeting signature:', error);
         return res.status(500).json({ error: 'Failed to generate meeting signature.', details: error.message });
