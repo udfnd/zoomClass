@@ -191,6 +191,34 @@ const fetchZoomZakToken = async (authInfo) => {
     };
 };
 
+const extractZakFromZoomUrl = (url) => {
+    if (!url) {
+        return '';
+    }
+
+    try {
+        const parsed = new URL(url);
+        const zakParam = parsed.searchParams.get('zak');
+        if (zakParam) {
+            return zakParam;
+        }
+    } catch (error) {
+        console.warn('[backend] Failed to parse start_url as URL when extracting ZAK:', error);
+    }
+
+    const match = url.match(/[?&#]zak=([^&#]+)/);
+    if (match && match[1]) {
+        try {
+            return decodeURIComponent(match[1]);
+        } catch (decodeError) {
+            console.warn('[backend] Failed to decode ZAK extracted from start_url:', decodeError);
+            return match[1];
+        }
+    }
+
+    return '';
+};
+
 const createZoomMeeting = async ({ topic, hostName }) => {
     ensureZoomApiAccessConfigured();
 
@@ -228,16 +256,31 @@ const createZoomMeeting = async ({ topic, hostName }) => {
     }
 
     let zakInfo = null;
+    let zakSource = null;
     try {
         zakInfo = await fetchZoomZakToken(authInfo);
+        if (zakInfo?.zak) {
+            zakSource = 'user_token_endpoint';
+        }
     } catch (zakError) {
         console.warn('[backend] Failed to issue ZAK token for host session:', zakError);
     }
 
+    let startUrlZak = '';
+    if (!zakInfo?.zak) {
+        startUrlZak = extractZakFromZoomUrl(data.start_url || '');
+        if (startUrlZak) {
+            zakSource = 'start_url';
+        }
+    }
+
+    const resolvedZak = zakInfo?.zak || startUrlZak || '';
+
     return {
         meeting: data,
-        zak: zakInfo?.zak || '',
+        zak: resolvedZak,
         zakExpiresIn: zakInfo?.expiresIn || null,
+        zakSource,
     };
 };
 
@@ -454,8 +497,9 @@ app.post('/meeting/create', async (req, res) => {
         let hostZak = '';
         let hostZakExpiresIn = null;
 
+        let zakSource = null;
         if (isZoomApiAccessConfigured()) {
-            const { meeting: createdMeeting, zak, zakExpiresIn } = await createZoomMeeting({ topic, hostName });
+            const { meeting: createdMeeting, zak, zakExpiresIn, zakSource: source } = await createZoomMeeting({ topic, hostName });
             meeting = createdMeeting;
             meetingNumber = `${createdMeeting.id}`;
             passcode = createdMeeting.password || createdMeeting.passcode || '';
@@ -463,6 +507,7 @@ app.post('/meeting/create', async (req, res) => {
             startUrl = createdMeeting.start_url || '';
             hostZak = zak || '';
             hostZakExpiresIn = zakExpiresIn || null;
+            zakSource = source || null;
         } else {
             meetingNumber = generateFallbackMeetingNumber();
             passcode = '';
@@ -514,6 +559,7 @@ app.post('/meeting/create', async (req, res) => {
             isZoomApiMeeting: isZoomApiAccessConfigured(),
             zak: hostZak,
             zakExpiresIn: hostZakExpiresIn,
+            zakSource,
         });
     } catch (error) {
         console.error('[backend] Failed to create Zoom meeting:', error);

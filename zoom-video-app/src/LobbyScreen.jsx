@@ -178,7 +178,8 @@ function LobbyScreen({
                     resolvedRole = 0;
                     fallbackNotice =
                         '백엔드에서 호스트용 ZAK 토큰이 제공되지 않아 참가자 권한으로 수업에 입장합니다. ' +
-                        'Zoom OAuth 또는 API Key/Secret 설정을 완료하면 호스트로 입장할 수 있습니다.';
+                        '서버에 ZOOM_ACCOUNT_ID, ZOOM_CLIENT_ID, ZOOM_CLIENT_SECRET 값을 추가해 Zoom Server-to-Server OAuth를 구성하거나 ' +
+                        'ZOOM_API_KEY, ZOOM_API_SECRET(더 이상 권장되지 않음)을 설정한 뒤 백엔드를 재시작하면 호스트로 입장할 수 있습니다.';
                 } catch (fallbackError) {
                     console.warn('Failed to fallback to participant signature:', fallbackError);
                 }
