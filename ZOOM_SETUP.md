@@ -48,3 +48,4 @@
 - 백엔드는 Meeting SDK 서명을 생성할 때 회의 번호에서 숫자가 아닌 문자는 제거한 뒤 사용합니다. Zoom 대시보드에서 복사한 회의 번호에 공백이나 대시(`-`)가 포함되어 있어도 문제없이 작동하지만, 가능하면 숫자만 포함된 형태로 사용하는 것이 안전합니다.
 - 서명 문자열은 Zoom 공식 샘플과 동일하게 Base64로 인코딩한 뒤 URL 안전한 형태(`+` → `-`, `/` → `_`)로 정규화하고, 끝에 붙는 `=` 패딩은 제거합니다. 이렇게 하면 Meeting SDK에서 발생하던 `Signature is invalid` 오류를 예방할 수 있습니다.
 - 호스트로 입장할 때는 서명 외에도 Zoom에서 발급한 ZAK 토큰이 필요합니다. Server-to-Server OAuth 또는 JWT 자격 증명이 정확하게 설정되어 있어야 하며, `/meeting/create` 응답에 `zak` 값이 포함되는지 확인하세요.
+- 서명 값이 정상적으로 생성되었는지 즉시 확인하고 싶다면 `/meeting/signature` 또는 `/meeting/create` 호출 시 `{"debugSignature": true}`(혹은 `includeSignatureDetails`) 속성을 추가하세요. 응답에 `signatureDetails` 필드가 포함되어 Base64 URL 디코딩된 JWT header/payload 내용을 확인할 수 있습니다. 여기서 `mn`, `sdkKey`, `iat`, `exp`, `tokenExp` 값이 기대한대로 들어있다면 Zoom 웹 SDK가 같은 값을 검증하게 됩니다.
