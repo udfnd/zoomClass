@@ -263,8 +263,14 @@ let zoomOAuthTokenCache = {
     expiresAt: 0,
 };
 
+let zoomUserProfileCache = {
+    profile: null,
+    expiresAt: 0,
+};
+
 const resetZoomOAuthCache = () => {
     zoomOAuthTokenCache = { token: '', expiresAt: 0 };
+    zoomUserProfileCache = { profile: null, expiresAt: 0 };
 };
 
 const fetchZoomOAuthAccessToken = async ({ forceRefresh = false } = {}) => {
@@ -340,6 +346,61 @@ const fetchZoomOAuthAccessToken = async ({ forceRefresh = false } = {}) => {
     };
 
     return zoomOAuthTokenCache.token;
+};
+
+const getZoomUserProfile = async (authInfo, { forceRefresh = false } = {}) => {
+    ensureZoomApiAccessConfigured();
+
+    const now = Date.now();
+    if (!forceRefresh && zoomUserProfileCache.profile && now < zoomUserProfileCache.expiresAt) {
+        return zoomUserProfileCache.profile;
+    }
+
+    let resolvedAuthInfo = authInfo || (await getZoomApiAuthInfo());
+
+    const performProfileRequest = (authorizationHeader) =>
+        fetch('https://api.zoom.us/v2/users/me', {
+            headers: {
+                Authorization: authorizationHeader,
+            },
+        });
+
+    let response = await performProfileRequest(resolvedAuthInfo.headerValue);
+
+    if (response.status === 401 && resolvedAuthInfo.type === 'oauth') {
+        try {
+            const refreshedAuthInfo = await getZoomApiAuthInfo({ forceRefresh: true });
+            response = await performProfileRequest(refreshedAuthInfo.headerValue);
+            if (response.ok) {
+                resolvedAuthInfo = refreshedAuthInfo;
+            }
+        } catch (refreshError) {
+            console.error('[backend] Failed to refresh Zoom OAuth token after 401 profile response:', refreshError);
+        }
+    }
+
+    if (!response.ok) {
+        const bodyText = await response.text();
+        throw new Error(`Zoom 사용자 정보 조회 실패: ${response.status} ${response.statusText} - ${bodyText}`);
+    }
+
+    const data = await response.json();
+    if (!data || (!data.email && !data.user_email)) {
+        throw new Error('Zoom 사용자 정보 응답에 email 필드가 없습니다.');
+    }
+
+    const profile = {
+        id: data.id || data.user_id || '',
+        email: data.email || data.user_email || '',
+        firstName: data.first_name || '',
+        lastName: data.last_name || '',
+        displayName: data.display_name || data.user_display_name || '',
+    };
+
+    const ttlMs = 5 * 60 * 1000;
+    zoomUserProfileCache = { profile, expiresAt: Date.now() + ttlMs };
+
+    return profile;
 };
 
 const createZoomJwtToken = () => {
@@ -511,6 +572,7 @@ const createZoomMeeting = async ({ topic, hostName }) => {
 
     let zakInfo = null;
     let zakSource = null;
+    let hostProfile = null;
     try {
         zakInfo = await fetchZoomZakToken(authInfo);
         if (zakInfo?.zak) {
@@ -518,6 +580,12 @@ const createZoomMeeting = async ({ topic, hostName }) => {
         }
     } catch (zakError) {
         console.warn('[backend] Failed to issue ZAK token for host session:', zakError);
+    }
+
+    try {
+        hostProfile = await getZoomUserProfile(authInfo);
+    } catch (profileError) {
+        console.warn('[backend] Failed to fetch Zoom host profile:', profileError);
     }
 
     let startUrlZak = '';
@@ -535,6 +603,7 @@ const createZoomMeeting = async ({ topic, hostName }) => {
         zak: resolvedZak,
         zakExpiresIn: zakInfo?.expiresIn || null,
         zakSource,
+        hostProfile,
     };
 };
 
@@ -768,7 +837,7 @@ app.post('/meeting/create', async (req, res) => {
         let zakSource = null;
 
         try {
-            const { meeting: createdMeeting, zak, zakExpiresIn, zakSource: source } = await createZoomMeeting({
+            const { meeting: createdMeeting, zak, zakExpiresIn, zakSource: source, hostProfile } = await createZoomMeeting({
                 topic,
                 hostName,
             });
@@ -780,6 +849,18 @@ app.post('/meeting/create', async (req, res) => {
             hostZak = zak || '';
             hostZakExpiresIn = zakExpiresIn || null;
             zakSource = source || null;
+            if (hostProfile?.email) {
+                meeting.hostEmail = hostProfile.email;
+                meeting.hostDisplayName = hostProfile.displayName || '';
+                meeting.hostZoomUserId = hostProfile.id || '';
+            } else {
+                warnings.push({
+                    type: 'zoom_host_identity',
+                    message: 'Zoom 호스트 이메일을 가져오지 못했습니다. 호스트로 입장 시 오류가 발생할 수 있습니다.',
+                    details:
+                        'Zoom Server-to-Server OAuth 앱에 meeting:read:admin, user:read:admin 권한이 포함되어 있는지 확인해주세요.',
+                });
+            }
         } catch (meetingError) {
             console.error('[backend] Zoom API meeting creation failed.', meetingError);
             return res.status(502).json({
@@ -849,6 +930,9 @@ app.post('/meeting/create', async (req, res) => {
             zak: hostZak,
             zakExpiresIn: hostZakExpiresIn,
             zakSource,
+            hostEmail: meeting?.hostEmail || '',
+            hostDisplayName: meeting?.hostDisplayName || '',
+            hostZoomUserId: meeting?.hostZoomUserId || '',
             warnings,
         });
     } catch (error) {
@@ -873,10 +957,22 @@ app.post('/meeting/signature', async (req, res) => {
         }
 
         let hostZak = '';
+        let hostEmail = '';
         if (normalizedRole === 1) {
             try {
-                const { zak } = await fetchZoomZakToken();
+                const authInfo = await getZoomApiAuthInfo();
+                const { zak } = await fetchZoomZakToken(authInfo);
                 hostZak = zak;
+                try {
+                    const profile = await getZoomUserProfile(authInfo);
+                    hostEmail = profile?.email || '';
+                } catch (profileError) {
+                    console.error('[backend] Failed to fetch host profile for signature:', profileError);
+                    return res.status(500).json({
+                        error: 'Zoom 호스트 이메일을 확인하지 못했습니다. 서버 구성과 Zoom 권한을 점검해주세요.',
+                        details: profileError.message,
+                    });
+                }
             } catch (zakError) {
                 console.error('[backend] Failed to issue ZAK token for host signature:', zakError);
                 return res.status(500).json({
@@ -887,7 +983,7 @@ app.post('/meeting/signature', async (req, res) => {
         }
 
         const signature = generateMeetingSdkSignature({ meetingNumber, role: normalizedRole });
-        return res.json({ signature, sdkKey: SDK_KEY, role: normalizedRole, zak: hostZak });
+        return res.json({ signature, sdkKey: SDK_KEY, role: normalizedRole, zak: hostZak, hostEmail });
     } catch (error) {
         console.error('[backend] Failed to generate meeting signature:', error);
         return res.status(500).json({ error: 'Failed to generate meeting signature.', details: error.message });
