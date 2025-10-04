@@ -3,6 +3,9 @@ const path = require('path');
 const webpack = require('webpack');
 const CopyWebpackPlugin = require('copy-webpack-plugin');
 
+const SDK_VERSION = '3.11.0';
+const sdkDistRoot = path.resolve(__dirname, 'node_modules/@zoom/meetingsdk/dist');
+
 require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 
 module.exports = {
@@ -32,6 +35,10 @@ module.exports = {
   },
   resolve: {
     extensions: ['.js', '.jsx'],
+    alias: {
+      'process/browser': require.resolve('process/browser'),
+      process: require.resolve('process/browser'),
+    },
     fallback: {
       "assert": require.resolve("assert/"),
       "buffer": require.resolve("buffer/"),
@@ -85,13 +92,23 @@ module.exports = {
     new CopyWebpackPlugin({
       patterns: [
         {
-          from: path.resolve(__dirname, 'node_modules/@zoom/videosdk/dist/lib'),
-          to: 'lib',
+          from: path.join(sdkDistRoot, 'lib'),
+          to: path.posix.join('zoomlib', SDK_VERSION, 'lib'),
           noErrorOnMissing: true,
         },
         {
-          from: path.resolve(__dirname, 'node_modules/@zoom/videosdk/dist/lib'),
-          to: path.posix.join('main_window', 'lib'),
+          from: path.join(sdkDistRoot, 'css'),
+          to: path.posix.join('zoomlib', SDK_VERSION, 'css'),
+          noErrorOnMissing: true,
+        },
+        {
+          from: path.join(sdkDistRoot, 'lib'),
+          to: path.posix.join('main_window', 'zoomlib', SDK_VERSION, 'lib'),
+          noErrorOnMissing: true,
+        },
+        {
+          from: path.join(sdkDistRoot, 'css'),
+          to: path.posix.join('main_window', 'zoomlib', SDK_VERSION, 'css'),
           noErrorOnMissing: true,
         },
       ],
