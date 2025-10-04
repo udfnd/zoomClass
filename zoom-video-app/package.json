@@ -54,6 +54,7 @@
     "vm-browserify": "^1.1.2"
   },
   "dependencies": {
+    "@zoom/meetingsdk": "^3.11.0",
     "dotenv": "^16.5.0",
     "electron-squirrel-startup": "^1.0.1",
     "electron-store": "^10.0.1",
