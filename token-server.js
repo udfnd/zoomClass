@@ -6,6 +6,32 @@ const os = require('os');
 const http = require('http');
 const https = require('https');
 
+const sanitizeEnvValue = (key, value) => {
+    if (typeof value !== 'string') {
+        return '';
+    }
+
+    let sanitized = value.trim();
+
+    if (sanitized.startsWith('"') && sanitized.endsWith('"')) {
+        sanitized = sanitized.slice(1, -1).trim();
+    } else if (sanitized.startsWith("'") && sanitized.endsWith("'")) {
+        sanitized = sanitized.slice(1, -1).trim();
+    }
+
+    if (/copy$/i.test(sanitized)) {
+        const withoutCopy = sanitized.slice(0, -4).trim();
+        if (withoutCopy) {
+            console.warn(
+                `[backend] ${key} 값 끝에 불필요한 'Copy' 텍스트가 감지되어 제거했습니다. 환경 변수 값을 다시 확인해주세요.`,
+            );
+            sanitized = withoutCopy;
+        }
+    }
+
+    return sanitized;
+};
+
 const createNativeFetchFallback = () => {
     const normalizeHeaders = (headersInit = {}) => {
         if (!headersInit) {
@@ -128,18 +154,18 @@ const host = process.env.HOST || '0.0.0.0';
 app.use(cors());
 app.use(express.json());
 
-const SDK_KEY = process.env.ZOOM_SDK_KEY;
-const SDK_SECRET = process.env.ZOOM_SDK_SECRET;
+const SDK_KEY = sanitizeEnvValue('ZOOM_SDK_KEY', process.env.ZOOM_SDK_KEY);
+const SDK_SECRET = sanitizeEnvValue('ZOOM_SDK_SECRET', process.env.ZOOM_SDK_SECRET);
 
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const supabaseUrl = sanitizeEnvValue('SUPABASE_URL', process.env.SUPABASE_URL);
+const supabaseServiceRoleKey = sanitizeEnvValue('SUPABASE_SERVICE_ROLE_KEY', process.env.SUPABASE_SERVICE_ROLE_KEY);
 const supabaseRestUrl = supabaseUrl ? `${supabaseUrl.replace(/\/$/, '')}/rest/v1` : null;
 
-const zoomAccountId = process.env.ZOOM_ACCOUNT_ID;
-const zoomClientId = process.env.ZOOM_CLIENT_ID;
-const zoomClientSecret = process.env.ZOOM_CLIENT_SECRET;
-const zoomApiKey = process.env.ZOOM_API_KEY;
-const zoomApiSecret = process.env.ZOOM_API_SECRET;
+const zoomAccountId = sanitizeEnvValue('ZOOM_ACCOUNT_ID', process.env.ZOOM_ACCOUNT_ID);
+const zoomClientId = sanitizeEnvValue('ZOOM_CLIENT_ID', process.env.ZOOM_CLIENT_ID);
+const zoomClientSecret = sanitizeEnvValue('ZOOM_CLIENT_SECRET', process.env.ZOOM_CLIENT_SECRET);
+const zoomApiKey = sanitizeEnvValue('ZOOM_API_KEY', process.env.ZOOM_API_KEY);
+const zoomApiSecret = sanitizeEnvValue('ZOOM_API_SECRET', process.env.ZOOM_API_SECRET);
 
 const isZoomOAuthConfigured = () => Boolean(zoomAccountId && zoomClientId && zoomClientSecret);
 const isZoomJwtConfigured = () => Boolean(zoomApiKey && zoomApiSecret);
@@ -339,7 +365,7 @@ const extractZakFromZoomUrl = (url) => {
 const createZoomMeeting = async ({ topic, hostName }) => {
     ensureZoomApiAccessConfigured();
 
-    const authInfo = await getZoomApiAuthInfo();
+    let authInfo = await getZoomApiAuthInfo();
 
     const payload = {
         topic: topic || 'ZoomClass Session',
@@ -353,18 +379,47 @@ const createZoomMeeting = async ({ topic, hostName }) => {
         },
     };
 
-    const response = await fetch('https://api.zoom.us/v2/users/me/meetings', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            Authorization: authInfo.headerValue,
-        },
-        body: JSON.stringify(payload),
-    });
+    const buildErrorMessage = async (response) => {
+        const bodyText = await response.text();
+        if (response.status === 401) {
+            return [
+                'Zoom 회의 생성 실패: 401 Unauthorized - Zoom 자격 증명이 올바른지 확인해주세요.',
+                bodyText,
+                'Server-to-Server OAuth 앱이 meeting:write:admin 권한을 갖고 있는지 확인하고,',
+                '환경 변수에 불필요한 공백이나 Copy 같은 추가 텍스트가 포함되어 있지 않은지 점검해주세요.',
+            ]
+                .filter(Boolean)
+                .join(' ');
+        }
+        return `Zoom 회의 생성 실패: ${response.status} ${response.statusText} - ${bodyText}`;
+    };
+
+    const performCreateRequest = async (authorization) =>
+        fetch('https://api.zoom.us/v2/users/me/meetings', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: authorization,
+            },
+            body: JSON.stringify(payload),
+        });
+
+    let response = await performCreateRequest(authInfo.headerValue);
+
+    if (response.status === 401 && authInfo.type === 'oauth') {
+        try {
+            const refreshedAuthInfo = await getZoomApiAuthInfo();
+            response = await performCreateRequest(refreshedAuthInfo.headerValue);
+            if (response.ok) {
+                authInfo = refreshedAuthInfo;
+            }
+        } catch (refreshError) {
+            console.error('[backend] Failed to refresh Zoom OAuth token after 401 response:', refreshError);
+        }
+    }
 
     if (!response.ok) {
-        const bodyText = await response.text();
-        throw new Error(`Zoom 회의 생성 실패: ${response.status} ${response.statusText} - ${bodyText}`);
+        throw new Error(await buildErrorMessage(response));
     }
 
     const data = await response.json();
