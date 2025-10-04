@@ -271,18 +271,19 @@ const fetchZoomOAuthAccessToken = async ({ forceRefresh = false } = {}) => {
     }
 
     const basicAuth = Buffer.from(`${zoomClientId}:${zoomClientSecret}`).toString('base64');
-    const requestBody = new URLSearchParams({
+    const requestParams = new URLSearchParams({
         grant_type: 'account_credentials',
         account_id: zoomAccountId,
     });
 
-    const response = await fetch('https://zoom.us/oauth/token', {
+    const tokenUrl = `https://zoom.us/oauth/token?${requestParams.toString()}`;
+
+    const response = await fetch(tokenUrl, {
         method: 'POST',
         headers: {
             Authorization: `Basic ${basicAuth}`,
-            'Content-Type': 'application/x-www-form-urlencoded',
+            Accept: 'application/json',
         },
-        body: requestBody.toString(),
     });
 
     const responseText = await response.text();
