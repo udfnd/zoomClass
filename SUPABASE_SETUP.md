@@ -29,6 +29,14 @@ create index if not exists meetings_start_time_idx on public.meetings (start_tim
 ```bash
 ZOOM_SDK_KEY=your_zoom_sdk_key
 ZOOM_SDK_SECRET=your_zoom_sdk_secret
+# 아래 둘 중 하나를 설정하세요 (Meeting SDK 호스트 참가 시 필수)
+# 1) Server-to-Server OAuth 자격 증명
+# ZOOM_ACCOUNT_ID=your_zoom_account_id
+# ZOOM_CLIENT_ID=your_zoom_oauth_client_id
+# ZOOM_CLIENT_SECRET=your_zoom_oauth_client_secret
+# 2) 또는 Zoom JWT API Key/Secret (레거시 계정)
+# ZOOM_API_KEY=your_zoom_api_key
+# ZOOM_API_SECRET=your_zoom_api_secret
 BACKEND_BASE_URL=http://localhost:4000
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=your_service_role_key

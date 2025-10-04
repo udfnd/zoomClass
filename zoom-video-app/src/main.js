@@ -60,6 +60,7 @@ let connectSrcAllowlist = computeConnectSrcAllowlist();
 
 const ZOOM_CDN_HOSTS = [
   'https://source.zoom.us',
+  'https://zoom.us',
   'https://*.zoom.us',
   'https://*.zoomgov.com',
   'https://dmogdx0jrul3u.cloudfront.net',
@@ -68,6 +69,7 @@ const ZOOM_CDN_HOSTS = [
 const ZOOM_ASSET_HOSTS = [...ZOOM_CDN_HOSTS];
 
 const ZOOM_REQUEST_PATTERNS = [
+  '*://zoom.us/*',
   '*://source.zoom.us/*',
   '*://*.zoom.us/sdk/*',
   '*://*.zoom.us/meetingsdk/*',
@@ -134,6 +136,7 @@ const buildCspHeaderValue = () => {
     ]),
     'frame-src': uniqueTokens([
       "'self'",
+      'https://zoom.us',
       'https://*.zoom.us',
       'https://*.zoomgov.com',
     ]),
