@@ -1,5 +1,6 @@
 const ZOOM_STATIC_HOSTS = [
   'https://source.zoom.us',
+  'https://zoom.us',
   'https://*.zoom.us',
   'https://*.zoomgov.com',
   'https://*.zoomus.cn',
@@ -7,6 +8,7 @@ const ZOOM_STATIC_HOSTS = [
 ];
 
 const ZOOM_FRAME_HOSTS = [
+  'https://zoom.us',
   'https://*.zoom.us',
   'https://*.zoomgov.com',
   'https://*.zoomus.cn',
