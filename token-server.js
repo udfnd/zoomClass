@@ -256,6 +256,9 @@ const generateMeetingSdkSignature = ({ meetingNumber, role }) => {
     const header = { alg: 'HS256', typ: 'JWT' };
     const payload = {
         sdkKey: SDK_KEY,
+        // Zoom Meeting SDK requires both sdkKey and appKey fields to be populated with the SDK key value
+        // when constructing the JWT signature payload. See https://developers.zoom.us/docs/meeting-sdk/auth/#generate-a-signature
+        appKey: SDK_KEY,
         mn: numericMeetingNumber,
         role: normalizedRole,
         iat: issuedAt,
