@@ -144,10 +144,47 @@ function LobbyScreen({
 
             const meeting = payload.meeting || payload;
             const meetingNumber = meeting.meetingNumber || meeting.meeting_id || meeting.id;
+            const sdkKey = payload.sdkKey || meeting.sdkKey || '';
             const signature = meeting.signature || meeting.hostSignature;
             const zak = meeting.zak || meeting.hostZak || payload.zak || '';
 
-            if (!meetingNumber || !signature || !meeting.sdkKey) {
+            let resolvedSignature = signature;
+            let resolvedZak = zak;
+            let resolvedRole = 1;
+            let fallbackNotice = '';
+
+            if (!resolvedZak) {
+                try {
+                    const fallbackResponse = await fetch(`${sanitizedBackendUrl}/meeting/signature`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ meetingNumber, role: 0 }),
+                    });
+
+                    const fallbackPayload = await fallbackResponse.json().catch(() => ({}));
+
+                    if (!fallbackResponse.ok) {
+                        throw new Error(
+                            fallbackPayload.error || fallbackPayload.message || '참가자용 회의 서명 요청이 실패했습니다.',
+                        );
+                    }
+
+                    if (!fallbackPayload.signature) {
+                        throw new Error('참가자용 회의 서명을 발급받지 못했습니다.');
+                    }
+
+                    resolvedSignature = fallbackPayload.signature;
+                    resolvedZak = fallbackPayload.zak || '';
+                    resolvedRole = 0;
+                    fallbackNotice =
+                        '백엔드에서 호스트용 ZAK 토큰이 제공되지 않아 참가자 권한으로 수업에 입장합니다. ' +
+                        'Zoom OAuth 또는 API Key/Secret 설정을 완료하면 호스트로 입장할 수 있습니다.';
+                } catch (fallbackError) {
+                    console.warn('Failed to fallback to participant signature:', fallbackError);
+                }
+            }
+
+            if (!meetingNumber || !resolvedSignature || !sdkKey) {
                 throw new Error('백엔드에서 필요한 회의 정보를 받지 못했습니다.');
             }
 
@@ -161,16 +198,20 @@ function LobbyScreen({
                     userName: resolvedUser,
                     meetingNumber: `${meetingNumber}`,
                     passcode: meeting.passcode || meeting.password || '',
-                    signature,
-                    sdkKey: meeting.sdkKey,
+                    signature: resolvedSignature,
+                    sdkKey,
                     joinUrl: meeting.joinUrl || meeting.join_url || '',
                     shareLink: meeting.shareLink || meeting.share_link || meeting.joinHelperUrl || payload.shareLink,
                     startUrl: meeting.startUrl || meeting.start_url || '',
-                    zak,
-                    role: 1,
+                    zak: resolvedZak,
+                    role: resolvedRole,
                 },
                 sanitizedBackendUrl,
             );
+
+            if (fallbackNotice) {
+                alert(fallbackNotice);
+            }
         } catch (error) {
             console.error('Failed to create meeting:', error);
             alert(`수업 생성에 실패했습니다: ${error.message}`);
