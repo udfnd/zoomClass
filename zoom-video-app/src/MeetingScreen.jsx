@@ -275,10 +275,56 @@ export default function MeetingScreen({ meetingContext, onLeaveMeeting }) {
     const [isAudioMuted, setIsAudioMuted] = useState(false);
     const [isVideoOn, setIsVideoOn] = useState(false);
     const [isScreenSharing, setIsScreenSharing] = useState(false);
+    const [isMediaReady, setIsMediaReady] = useState(false);
     const [controlMessage, setControlMessage] = useState('');
     const [controlMessageType, setControlMessageType] = useState('info');
     const [sharingParticipant, setSharingParticipant] = useState(null);
     const [isZoomPanelVisible, setIsZoomPanelVisible] = useState(false);
+
+    const isMountedRef = useRef(true);
+
+    useEffect(() => {
+        return () => {
+            isMountedRef.current = false;
+        };
+    }, []);
+
+    const safeSetMediaReady = useCallback((nextValue) => {
+        if (isMountedRef.current) {
+            setIsMediaReady(nextValue);
+        }
+    }, []);
+
+    const tryAcquireMediaStream = useCallback(async () => {
+        const client = clientRef.current;
+        if (!client) {
+            mediaStreamRef.current = null;
+            safeSetMediaReady(false);
+            return null;
+        }
+
+        let stream = null;
+
+        try {
+            const candidate = client.getMediaStream?.();
+            stream = candidate && typeof candidate.then === 'function' ? await candidate : candidate;
+        } catch (mediaStreamError) {
+            console.warn('[MeetingScreen] Failed to obtain media stream from client:', mediaStreamError);
+        }
+
+        if (!stream && client.mediaStream) {
+            stream = client.mediaStream;
+        }
+
+        if (!stream) {
+            safeSetMediaReady(false);
+            return null;
+        }
+
+        mediaStreamRef.current = stream;
+        safeSetMediaReady(true);
+        return stream;
+    }, [safeSetMediaReady]);
 
     const info = useMemo(() => {
         if (!meetingContext) {
@@ -422,7 +468,13 @@ export default function MeetingScreen({ meetingContext, onLeaveMeeting }) {
     const updateParticipantsList = useCallback(async () => {
         const client = clientRef.current;
         if (!client) {
+            mediaStreamRef.current = null;
+            safeSetMediaReady(false);
             return;
+        }
+
+        if (!mediaStreamRef.current) {
+            await tryAcquireMediaStream();
         }
 
         const rawList = await fetchParticipants(client);
@@ -455,7 +507,7 @@ export default function MeetingScreen({ meetingContext, onLeaveMeeting }) {
         const activeShare = normalized.find((participant) => participant.isSharing);
         setSharingParticipant(activeShare || null);
         setIsScreenSharing(Boolean(activeShare?.isSelf));
-    }, [info.userName]);
+    }, [info.userName, safeSetMediaReady, tryAcquireMediaStream]);
 
     const scheduleParticipantPolling = useCallback(() => {
         if (participantPollRef.current) {
@@ -504,6 +556,7 @@ export default function MeetingScreen({ meetingContext, onLeaveMeeting }) {
                 clearTimeout(controlMessageTimerRef.current);
                 controlMessageTimerRef.current = null;
             }
+            safeSetMediaReady(false);
             canvasRefs.current.forEach((canvas, participantId) => {
                 const stream = mediaStreamRef.current;
                 if (!stream) {
@@ -629,11 +682,9 @@ export default function MeetingScreen({ meetingContext, onLeaveMeeting }) {
 
                 setStatusKey('joined');
 
-                try {
-                    mediaStreamRef.current = clientRef.current?.getMediaStream?.() || null;
-                } catch (mediaStreamError) {
-                    console.warn('[MeetingScreen] Failed to acquire media stream:', mediaStreamError);
-                    mediaStreamRef.current = null;
+                const stream = await tryAcquireMediaStream();
+                if (!stream) {
+                    console.warn('[MeetingScreen] Media stream not immediately available after joining; will retry.');
                 }
 
                 try {
@@ -678,7 +729,7 @@ export default function MeetingScreen({ meetingContext, onLeaveMeeting }) {
         return () => {
             cancelled = true;
         };
-    }, [meetingContext, sdkReady, scheduleParticipantPolling, updateParticipantsList]);
+    }, [meetingContext, sdkReady, scheduleParticipantPolling, tryAcquireMediaStream, updateParticipantsList]);
 
     useEffect(() => {
         participants.forEach((participant) => {
@@ -733,9 +784,11 @@ export default function MeetingScreen({ meetingContext, onLeaveMeeting }) {
         } catch (leaveError) {
             console.warn('[MeetingScreen] leave failed:', leaveError);
         } finally {
+            mediaStreamRef.current = null;
+            safeSetMediaReady(false);
             onLeaveMeeting?.();
         }
-    }, [onLeaveMeeting]);
+    }, [onLeaveMeeting, safeSetMediaReady]);
 
     const handleCopyShareLink = useCallback(async () => {
         const linkToCopy = info.shareLink || info.joinUrl;
@@ -749,9 +802,12 @@ export default function MeetingScreen({ meetingContext, onLeaveMeeting }) {
     }, [info.joinUrl, info.shareLink]);
 
     const handleToggleAudio = useCallback(async () => {
-        const stream = mediaStreamRef.current;
+        let stream = mediaStreamRef.current;
         if (!stream) {
-            showControlFeedback('error', '오디오 스트림을 사용할 수 없습니다.');
+            stream = await tryAcquireMediaStream();
+        }
+        if (!stream) {
+            showControlFeedback('error', '오디오 스트림을 사용할 수 없습니다. 잠시 후 다시 시도해주세요.');
             return;
         }
         try {
@@ -768,12 +824,15 @@ export default function MeetingScreen({ meetingContext, onLeaveMeeting }) {
             console.error('[MeetingScreen] toggle audio failed:', toggleError);
             showControlFeedback('error', '마이크 상태를 변경하지 못했습니다.');
         }
-    }, [isAudioMuted, showControlFeedback]);
+    }, [isAudioMuted, showControlFeedback, tryAcquireMediaStream]);
 
     const handleToggleVideo = useCallback(async () => {
-        const stream = mediaStreamRef.current;
+        let stream = mediaStreamRef.current;
         if (!stream) {
-            showControlFeedback('error', '비디오 스트림을 사용할 수 없습니다.');
+            stream = await tryAcquireMediaStream();
+        }
+        if (!stream) {
+            showControlFeedback('error', '비디오 스트림을 사용할 수 없습니다. 잠시 후 다시 시도해주세요.');
             return;
         }
         try {
@@ -790,12 +849,15 @@ export default function MeetingScreen({ meetingContext, onLeaveMeeting }) {
             console.error('[MeetingScreen] toggle video failed:', toggleError);
             showControlFeedback('error', '카메라 상태를 변경하지 못했습니다.');
         }
-    }, [isVideoOn, showControlFeedback]);
+    }, [isVideoOn, showControlFeedback, tryAcquireMediaStream]);
 
     const handleToggleScreenShare = useCallback(async () => {
-        const stream = mediaStreamRef.current;
+        let stream = mediaStreamRef.current;
         if (!stream) {
-            showControlFeedback('error', '화면 공유를 사용할 수 없습니다.');
+            stream = await tryAcquireMediaStream();
+        }
+        if (!stream) {
+            showControlFeedback('error', '화면 공유를 사용할 수 없습니다. 잠시 후 다시 시도해주세요.');
             return;
         }
 
@@ -818,7 +880,7 @@ export default function MeetingScreen({ meetingContext, onLeaveMeeting }) {
             console.error('[MeetingScreen] toggle screen share failed:', toggleError);
             showControlFeedback('error', '화면 공유 상태를 변경하지 못했습니다.');
         }
-    }, [isScreenSharing, sharingParticipant, showControlFeedback]);
+    }, [isScreenSharing, sharingParticipant, showControlFeedback, tryAcquireMediaStream]);
 
     const attachParticipantCanvas = useCallback(
         (participant) => (node) => {
@@ -876,17 +938,17 @@ export default function MeetingScreen({ meetingContext, onLeaveMeeting }) {
                     </p>
                 </div>
                 <div className="control-bar">
-                    <button type="button" className="btn btn-ghost" onClick={handleToggleAudio} disabled={!mediaStreamRef.current}>
+                    <button type="button" className="btn btn-ghost" onClick={handleToggleAudio} disabled={!isMediaReady}>
                         {isAudioMuted ? '음소거 해제' : '음소거'}
                     </button>
-                    <button type="button" className="btn btn-ghost" onClick={handleToggleVideo} disabled={!mediaStreamRef.current}>
+                    <button type="button" className="btn btn-ghost" onClick={handleToggleVideo} disabled={!isMediaReady}>
                         {isVideoOn ? '비디오 중지' : '비디오 시작'}
                     </button>
                     <button
                         type="button"
                         className="btn btn-secondary"
                         onClick={handleToggleScreenShare}
-                        disabled={!mediaStreamRef.current || (!isScreenSharing && sharingParticipant && !sharingParticipant.isSelf)}
+                        disabled={!isMediaReady || (!isScreenSharing && sharingParticipant && !sharingParticipant.isSelf)}
                     >
                         {isScreenSharing ? '공유 중지' : '화면 공유'}
                     </button>
