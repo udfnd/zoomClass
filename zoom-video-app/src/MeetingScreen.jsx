@@ -255,6 +255,36 @@ const castUserIdForMediaStream = (value) => {
     return value;
 };
 
+const MEDIA_STREAM_METHOD_CANDIDATES = {
+    startVideo: ['startVideo', 'resumeVideo', 'unmuteVideo', 'startCamera', 'startVideoTrack'],
+    stopVideo: ['stopVideo', 'muteVideo', 'pauseVideo', 'stopCamera', 'stopVideoTrack'],
+};
+
+const invokeMediaStreamMethod = async (stream, methodNames, args = []) => {
+    if (!stream || !Array.isArray(methodNames) || methodNames.length === 0) {
+        return { ok: false, errors: [] };
+    }
+
+    const errors = [];
+
+    for (const name of methodNames) {
+        const candidate = stream?.[name];
+        if (typeof candidate !== 'function') {
+            continue;
+        }
+
+        try {
+            const result = candidate.apply(stream, args);
+            const awaited = result && typeof result.then === 'function' ? await result : result;
+            return { ok: true, method: name, result: awaited };
+        } catch (error) {
+            errors.push({ name, error });
+        }
+    }
+
+    return { ok: false, errors };
+};
+
 export default function MeetingScreen({ meetingContext, onLeaveMeeting }) {
     const zoomRootRef = useRef(null);
     const clientRef = useRef(null);
@@ -835,13 +865,28 @@ export default function MeetingScreen({ meetingContext, onLeaveMeeting }) {
             showControlFeedback('error', '비디오 스트림을 사용할 수 없습니다. 잠시 후 다시 시도해주세요.');
             return;
         }
+
         try {
             if (isVideoOn) {
-                await stream.stopVideo?.();
+                const result = await invokeMediaStreamMethod(stream, MEDIA_STREAM_METHOD_CANDIDATES.stopVideo);
+                if (!result.ok) {
+                    const firstError =
+                        result.errors?.[0]?.error || new Error('지원 가능한 비디오 중지 메서드를 찾을 수 없습니다.');
+                    console.error('[MeetingScreen] toggle video failed: stop method unavailable', firstError);
+                    showControlFeedback('error', '카메라 상태를 변경하지 못했습니다.');
+                    return;
+                }
                 setIsVideoOn(false);
                 showControlFeedback('success', '카메라가 꺼졌습니다.');
             } else {
-                await stream.startVideo?.();
+                const result = await invokeMediaStreamMethod(stream, MEDIA_STREAM_METHOD_CANDIDATES.startVideo);
+                if (!result.ok) {
+                    const firstError =
+                        result.errors?.[0]?.error || new Error('지원 가능한 비디오 시작 메서드를 찾을 수 없습니다.');
+                    console.error('[MeetingScreen] toggle video failed: start method unavailable', firstError);
+                    showControlFeedback('error', '카메라 상태를 변경하지 못했습니다.');
+                    return;
+                }
                 setIsVideoOn(true);
                 showControlFeedback('success', '카메라가 켜졌습니다.');
             }
