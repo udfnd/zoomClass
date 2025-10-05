@@ -29,6 +29,12 @@ module.exports = {
     // 브라우저 렌더러 + HMR 환경에 맞춤
     target: 'electron-renderer',
 
+    // Electron 렌더러 타깃이라도 Node 내장 모듈을 외부 의존성으로 두지 않도록 강제
+    // (nodeIntegration=false 환경에서는 require가 존재하지 않아 dev-server 번들이 깨진다)
+    externalsPresets: {
+        electronRenderer: false,
+    },
+
     // ✅ Webpack 5: Node 코어 모듈 폴리필 수동 제공
     resolve: {
         fallback: {

@@ -103,6 +103,9 @@ const STYLE_HOSTS = ['https://fonts.googleapis.com'];
 const uniqueTokens = (values = []) =>
   Array.from(new Set(values.filter(Boolean)));
 
+const WINDOWS_APP_USER_MODEL_ID = process.env.ELECTRON_APP_USER_MODEL_ID
+  || 'com.zoomclass.desktop';
+
 const buildCspHeaderValue = () => {
   const directives = {
     'default-src': uniqueTokens([
@@ -271,6 +274,13 @@ function createWindow() {
 
 app.whenReady().then(() => {
   initializePersistentStore();
+  if (process.platform === 'win32') {
+    try {
+      app.setAppUserModelId(WINDOWS_APP_USER_MODEL_ID);
+    } catch (error) {
+      console.warn('Failed to set Windows AppUserModelID:', error);
+    }
+  }
   if (store) {
     overrideBackendUrl = readStoreBackendOverride();
     connectSrcAllowlist = computeConnectSrcAllowlist();
