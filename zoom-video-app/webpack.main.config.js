@@ -1,4 +1,4 @@
-// zoom-video-app/webpack.main.config.js
+// zoom-video-app/webpack.main.config.js (수정된 전체 파일)
 const path = require('path');
 
 module.exports = {
@@ -27,6 +27,6 @@ module.exports = {
     filename: 'index.js',
   },
   externals: {
-    'electron-store': 'commonjs electron-store',
+    'electron-store': 'commonjs2 electron-store',
   },
 };
