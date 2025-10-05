@@ -26,7 +26,4 @@ module.exports = {
     path: path.resolve(__dirname, '.webpack/main'),
     filename: 'index.js',
   },
-  externals: {
-    'electron-store': 'commonjs2 electron-store',
-  },
 };
