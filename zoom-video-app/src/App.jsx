@@ -37,7 +37,7 @@ function App() {
                     override = await window.electronAPI.getStoreValue('backendUrlOverride', '');
                 }
             } catch (error) {
-                console.warn('Failed to load backend override from electron-store:', error);
+                console.warn('Failed to load backend override from persistent storage:', error);
             }
 
             if (!override) {
@@ -72,7 +72,7 @@ function App() {
                 await window.electronAPI.setStoreValue('backendUrlOverride', normalized);
             }
         } catch (error) {
-            console.warn('Failed to persist backend override to electron-store:', error);
+            console.warn('Failed to persist backend override to persistent storage:', error);
         }
 
         try {
@@ -92,7 +92,7 @@ function App() {
                 await window.electronAPI.deleteStoreValue('backendUrlOverride');
             }
         } catch (error) {
-            console.warn('Failed to remove backend override from electron-store:', error);
+            console.warn('Failed to remove backend override from persistent storage:', error);
         }
 
         try {

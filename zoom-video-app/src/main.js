@@ -1,7 +1,7 @@
 // src/main.js
 require('dotenv').config();
 const { app, BrowserWindow, ipcMain, session } = require('electron');
-const Store = require('electron-store').default;
+const { createPersistentStore } = require('./utils/simpleStore');
 const {
   DEFAULT_BACKEND_FALLBACK,
   normalizeBackendUrl,
@@ -13,7 +13,7 @@ if (require('electron-squirrel-startup')) {
   app.quit();
 }
 
-const store = new Store();
+const store = createPersistentStore({ fileName: 'settings.json' });
 
 const readStoreBackendOverride = () => {
   if (!store) {
@@ -23,7 +23,7 @@ const readStoreBackendOverride = () => {
   try {
     return normalizeBackendUrl(store.get('backendUrlOverride', ''));
   } catch (error) {
-    console.warn('Failed to read backend override from electron-store:', error);
+    console.warn('Failed to read backend override from persistent store:', error);
     return '';
   }
 };
@@ -300,7 +300,7 @@ ipcMain.handle('get-backend-url', async () => {
   return resolveBackendUrl();
 });
 
-// electron-store IPC 핸들러 (store 변수가 유효할 때만 작동하도록 방어 코드 추가)
+// Persistent store IPC handlers (guarded so they only run when the store is ready)
 ipcMain.handle('electron-store-get', async (event, key, defaultValue) => {
   if (!store) {
     console.error("Store is not available for 'get' operation.");
