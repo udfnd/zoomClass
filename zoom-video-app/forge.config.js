@@ -27,8 +27,14 @@ const devContentSecurityPolicy = buildCspString({
 const makers = [
   {
     name: '@electron-forge/maker-squirrel',
+    config: {
+      name: 'zoom-video-app',
+      authors: 'Your Company',
+      setupExe: 'ZoomClassSetup.exe',
+      noMsi: true,
+      shortcutFolderName: 'Zoom Class',
+    },
     platforms: ['win32'],
-    config: {},
   },
   {
     name: '@electron-forge/maker-zip',
@@ -76,6 +82,14 @@ module.exports = {
         },
       },
     },
-    new FusesPlugin({ /* ...기존 설정 유지... */ }),
+    new FusesPlugin({
+      version: FuseVersion.V1,
+      [FuseV1Options.RunAsNode]: false,
+      [FuseV1Options.EnableCookieEncryption]: true,
+      [FuseV1Options.EnableNodeOptionsEnvironmentVariable]: false,
+      [FuseV1Options.EnableNodeCliInspectArguments]: false,
+      [FuseV1Options.EnableEmbeddedAsarIntegrityValidation]: true,
+      [FuseV1Options.OnlyLoadAppFromAsar]: true,
+    }),
   ],
 };
