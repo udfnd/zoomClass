@@ -13,11 +13,30 @@ if (require('electron-squirrel-startup')) {
   app.quit();
 }
 
-const store = createPersistentStore({ fileName: 'settings.json' });
+let store;
+let overrideBackendUrl = '';
+
+const initializePersistentStore = () => {
+  if (store) {
+    return store;
+  }
+
+  if (!app.isReady()) {
+    return null;
+  }
+
+  store = createPersistentStore({ fileName: 'settings.json' });
+
+  if (!store) {
+    console.error('Failed to initialize persistent store.');
+  }
+
+  return store;
+};
 
 const readStoreBackendOverride = () => {
   if (!store) {
-    return '';
+    return overrideBackendUrl || '';
   }
 
   try {
@@ -34,7 +53,6 @@ const readEnvBackendUrl = () =>
   );
 
 let envBackendUrl = readEnvBackendUrl();
-let overrideBackendUrl = readStoreBackendOverride();
 
 const computeConnectSrcAllowlist = () => {
   const additions = [];
@@ -252,10 +270,13 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
-  if (!store) {
-    console.error("ElectronStore was not initialized. Aborting window creation.");
-    app.quit(); // store가 없으면 앱 실행 불가
-    return;
+  initializePersistentStore();
+  if (store) {
+    overrideBackendUrl = readStoreBackendOverride();
+    connectSrcAllowlist = computeConnectSrcAllowlist();
+    store.onDidChange('backendUrlOverride', (newValue) => {
+      updateOverrideBackendUrl(newValue);
+    });
   }
 
   installCspAllowlist();
@@ -264,9 +285,7 @@ app.whenReady().then(() => {
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      if (store) { // activate 시점에도 store 확인
-        createWindow();
-      }
+      createWindow();
     }
   });
 });
@@ -303,17 +322,27 @@ ipcMain.handle('get-backend-url', async () => {
 // Persistent store IPC handlers (guarded so they only run when the store is ready)
 ipcMain.handle('electron-store-get', async (event, key, defaultValue) => {
   if (!store) {
-    console.error("Store is not available for 'get' operation.");
-    return defaultValue; // 또는 적절한 오류/기본값 반환
+    initializePersistentStore();
   }
+
+  if (!store) {
+    console.error("Store is not available for 'get' operation.");
+    return defaultValue;
+  }
+
   return store.get(key, defaultValue);
 });
 
 ipcMain.handle('electron-store-set', async (event, key, value) => {
   if (!store) {
+    initializePersistentStore();
+  }
+
+  if (!store) {
     console.error("Store is not available for 'set' operation.");
     return false;
   }
+
   store.set(key, value);
   if (key === 'backendUrlOverride') {
     updateOverrideBackendUrl(value);
@@ -323,9 +352,14 @@ ipcMain.handle('electron-store-set', async (event, key, value) => {
 
 ipcMain.handle('electron-store-delete', async (event, key) => {
   if (!store) {
+    initializePersistentStore();
+  }
+
+  if (!store) {
     console.error("Store is not available for 'delete' operation.");
     return false;
   }
+
   store.delete(key);
   if (key === 'backendUrlOverride') {
     updateOverrideBackendUrl('');
@@ -335,16 +369,15 @@ ipcMain.handle('electron-store-delete', async (event, key) => {
 
 ipcMain.handle('electron-store-clear', async () => {
   if (!store) {
+    initializePersistentStore();
+  }
+
+  if (!store) {
     console.error("Store is not available for 'clear' operation.");
     return false;
   }
+
   store.clear();
   updateOverrideBackendUrl('');
   return true;
 });
-
-if (store?.onDidChange) {
-  store.onDidChange('backendUrlOverride', (newValue) => {
-    updateOverrideBackendUrl(newValue);
-  });
-}
