@@ -12,6 +12,7 @@ function App() {
     const [backendUrl, setBackendUrl] = useState('');
     const [defaultBackendUrl, setDefaultBackendUrl] = useState('');
     const [isBackendResolved, setIsBackendResolved] = useState(false);
+    const [isBackendOverrideAllowed, setIsBackendOverrideAllowed] = useState(true);
 
     useEffect(() => {
         let isMounted = true;
@@ -31,6 +32,7 @@ function App() {
             }
 
             const normalizedDefault = normalizeBackendUrl(resolved);
+            const overrideAllowed = !normalizedDefault;
 
             try {
                 if (window?.electronAPI?.getStoreValue) {
@@ -48,11 +50,12 @@ function App() {
                 }
             }
 
-            const normalizedOverride = normalizeBackendUrl(override);
-            const nextBackend = normalizedOverride || normalizedDefault;
+            const normalizedOverride = overrideAllowed ? normalizeBackendUrl(override) : '';
+            const nextBackend = normalizedDefault || normalizedOverride;
 
             if (isMounted) {
                 setDefaultBackendUrl(normalizedDefault);
+                setIsBackendOverrideAllowed(overrideAllowed);
                 setBackendUrl(nextBackend);
                 setIsBackendResolved(true);
             }
@@ -65,28 +68,39 @@ function App() {
         };
     }, []);
 
-    const persistBackendOverride = useCallback(async (value) => {
-        const normalized = normalizeBackendUrl(value);
-        try {
-            if (window?.electronAPI?.setStoreValue) {
-                await window.electronAPI.setStoreValue('backendUrlOverride', normalized);
+    const persistBackendOverride = useCallback(
+        async (value) => {
+            if (!isBackendOverrideAllowed) {
+                return;
             }
-        } catch (error) {
-            console.warn('Failed to persist backend override to persistent storage:', error);
-        }
 
-        try {
-            if (normalized) {
-                window?.localStorage?.setItem('zoomClass.backendUrl', normalized);
-            } else {
-                window?.localStorage?.removeItem('zoomClass.backendUrl');
+            const normalized = normalizeBackendUrl(value);
+            try {
+                if (window?.electronAPI?.setStoreValue) {
+                    await window.electronAPI.setStoreValue('backendUrlOverride', normalized);
+                }
+            } catch (error) {
+                console.warn('Failed to persist backend override to persistent storage:', error);
             }
-        } catch (error) {
-            console.warn('Failed to persist backend override to localStorage:', error);
-        }
-    }, []);
+
+            try {
+                if (normalized) {
+                    window?.localStorage?.setItem('zoomClass.backendUrl', normalized);
+                } else {
+                    window?.localStorage?.removeItem('zoomClass.backendUrl');
+                }
+            } catch (error) {
+                console.warn('Failed to persist backend override to localStorage:', error);
+            }
+        },
+        [isBackendOverrideAllowed],
+    );
 
     const clearBackendOverride = useCallback(async () => {
+        if (!isBackendOverrideAllowed) {
+            return;
+        }
+
         try {
             if (window?.electronAPI?.deleteStoreValue) {
                 await window.electronAPI.deleteStoreValue('backendUrlOverride');
@@ -100,7 +114,7 @@ function App() {
         } catch (error) {
             console.warn('Failed to remove backend override from localStorage:', error);
         }
-    }, []);
+    }, [isBackendOverrideAllowed]);
 
     const updateBackendUrl = useCallback(
         async (nextUrl) => {
@@ -109,23 +123,36 @@ function App() {
                 throw new Error('유효한 백엔드 주소가 필요합니다.');
             }
 
+            if (!isBackendOverrideAllowed) {
+                if (normalized !== defaultBackendUrl) {
+                    throw new Error('이 앱은 현재 환경 변수에 설정된 토큰 서버만 사용할 수 있습니다.');
+                }
+
+                setBackendUrl(defaultBackendUrl);
+                return defaultBackendUrl;
+            }
+
             setBackendUrl(normalized);
             await persistBackendOverride(normalized);
             return normalized;
         },
-        [persistBackendOverride],
+        [defaultBackendUrl, isBackendOverrideAllowed, persistBackendOverride],
     );
 
     const resetBackendUrl = useCallback(async () => {
-        await clearBackendOverride();
+        if (isBackendOverrideAllowed) {
+            await clearBackendOverride();
+        }
+
         setBackendUrl(defaultBackendUrl);
         return defaultBackendUrl;
-    }, [clearBackendOverride, defaultBackendUrl]);
+    }, [clearBackendOverride, defaultBackendUrl, isBackendOverrideAllowed]);
 
     const joinMeeting = useCallback(
         (context, backendOverride) => {
             const normalizedOverride = normalizeBackendUrl(backendOverride);
-            const effectiveBackend = normalizedOverride || backendUrl;
+            const effectiveBackend =
+                isBackendOverrideAllowed && normalizedOverride ? normalizedOverride : backendUrl;
 
             if (!effectiveBackend) {
                 alert('백엔드 서버 주소가 구성되지 않았습니다. 먼저 연결 설정을 완료해주세요.');
@@ -137,14 +164,14 @@ function App() {
                 return;
             }
 
-            if (normalizedOverride && normalizedOverride !== backendUrl) {
+            if (isBackendOverrideAllowed && normalizedOverride && normalizedOverride !== backendUrl) {
                 setBackendUrl(normalizedOverride);
             }
 
             setMeetingContext({ ...context, backendUrl: effectiveBackend });
             setIsInMeeting(true);
         },
-        [backendUrl],
+        [backendUrl, isBackendOverrideAllowed],
     );
 
     const leaveMeeting = useCallback(async () => {
@@ -186,6 +213,7 @@ function App() {
                     backendUrl={backendUrl}
                     backendConfigured={isBackendConfigured}
                     defaultBackendUrl={defaultBackendUrl}
+                    backendOverrideAllowed={isBackendOverrideAllowed}
                     onJoinMeeting={joinMeeting}
                     onUpdateBackendUrl={updateBackendUrl}
                     onResetBackendUrl={resetBackendUrl}

@@ -7,6 +7,7 @@ function LobbyScreen({
     backendUrl,
     backendConfigured,
     defaultBackendUrl,
+    backendOverrideAllowed = true,
     onJoinMeeting,
     onUpdateBackendUrl,
     onResetBackendUrl,
@@ -29,8 +30,14 @@ function LobbyScreen({
     }, [backendUrl]);
 
     useEffect(() => {
+        if (!backendOverrideAllowed) {
+            setBackendMessage('환경 변수에 설정된 토큰 서버 주소가 사용 중입니다.');
+            setBackendInput(backendUrl);
+            return;
+        }
+
         setBackendMessage('');
-    }, [backendUrl]);
+    }, [backendUrl, backendOverrideAllowed]);
 
     const sanitizedBackendUrl = useMemo(() => normalizeBackendUrl(backendUrl), [backendUrl]);
 
@@ -338,6 +345,12 @@ function LobbyScreen({
 
     const handleBackendSubmit = async (event) => {
         event.preventDefault();
+        if (!backendOverrideAllowed) {
+            setBackendMessage('환경 변수에 설정된 토큰 서버만 사용할 수 있습니다.');
+            setBackendInput(backendUrl);
+            return;
+        }
+
         const normalized = normalizeBackendUrl(backendInput);
         if (!normalized) {
             setBackendMessage('올바른 형식의 주소를 입력해주세요. 예: http://192.168.0.10:4000');
@@ -357,6 +370,12 @@ function LobbyScreen({
     };
 
     const handleBackendReset = async () => {
+        if (!backendOverrideAllowed) {
+            setBackendInput(backendUrl);
+            setBackendMessage('환경 변수에 설정된 토큰 서버 주소로만 연결됩니다.');
+            return;
+        }
+
         if (!onResetBackendUrl) {
             return;
         }
@@ -425,19 +444,20 @@ function LobbyScreen({
                                 placeholder="http://호스트-IP:4000"
                                 value={backendInput || ''}
                                 onChange={(e) => setBackendInput(e.target.value)}
+                                disabled={!backendOverrideAllowed}
                             />
                             <p className="backend-help-text">
                                 동일한 네트워크의 다른 컴퓨터는 이 주소를 사용해 수업을 생성하고 참여할 수 있습니다.
                             </p>
                             <div className="control-card__actions">
-                                <button type="submit" className="btn btn-primary">
+                                <button type="submit" className="btn btn-primary" disabled={!backendOverrideAllowed}>
                                     주소 적용
                                 </button>
                                 <button
                                     type="button"
                                     className="btn btn-outline"
                                     onClick={handleBackendReset}
-                                    disabled={!defaultBackendUrl}
+                                    disabled={!backendOverrideAllowed || !defaultBackendUrl}
                                 >
                                     기본값으로 복원
                                 </button>
