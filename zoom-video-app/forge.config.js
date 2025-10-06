@@ -24,18 +24,29 @@ const devContentSecurityPolicy = buildCspString({
   connectSrc: Array.from(connectSrcValues),
 });
 
+const isWindowsHost = process.platform === 'win32';
+
 const makers = [
-  {
-    name: '@electron-forge/maker-squirrel',
-    config: {
-      name: 'zoom-video-app',
-      authors: 'Your Company',
-      setupExe: 'ZoomClassSetup.exe',
-      noMsi: true,
-      shortcutFolderName: 'Zoom Class',
-    },
-    platforms: ['win32'],
-  },
+  ...(isWindowsHost
+    ? [
+        {
+          name: '@electron-forge/maker-squirrel',
+          config: {
+            name: 'zoom-video-app',
+            authors: 'Your Company',
+            setupExe: 'ZoomClassSetup.exe',
+            noMsi: true,
+            shortcutFolderName: 'Zoom Class',
+          },
+          platforms: ['win32'],
+        },
+      ]
+    : [
+        {
+          name: '@electron-forge/maker-zip',
+          platforms: ['win32'],
+        },
+      ]),
   {
     name: '@electron-forge/maker-zip',
     platforms: ['darwin'],
