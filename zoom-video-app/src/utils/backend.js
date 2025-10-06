@@ -1,3 +1,11 @@
+const SUPABASE_ANON_KEY =
+    (process.env.SUPABASE_FUNCTION_ANON_KEY || process.env.SUPABASE_ANON_KEY || '').trim();
+const SUPABASE_HOST_PATTERN = /\.supabase\.[a-z]+$/i;
+const SUPABASE_AUTH_HELP_MESSAGE =
+    'Supabase Functions 백엔드를 호출하려면 환경 변수 SUPABASE_FUNCTION_ANON_KEY 또는 SUPABASE_ANON_KEY에 anon 키를 설정해야 합니다. Supabase Project Settings → API에서 anon public 키를 확인할 수 있습니다.';
+
+const isHeadersInstance = (value) => typeof Headers !== 'undefined' && value instanceof Headers;
+
 export const normalizeBackendUrl = (input) => {
     if (!input) {
         return '';
@@ -106,4 +114,126 @@ export const parseJoinLink = (input) => {
         displayName,
         hostName,
     };
+};
+
+const isSupabaseHostname = (hostname = '') => SUPABASE_HOST_PATTERN.test(hostname);
+
+export const isSupabaseEdgeFunctionUrl = (input) => {
+    const normalized = normalizeBackendUrl(input);
+    if (!normalized) {
+        return false;
+    }
+
+    try {
+        const { hostname, pathname } = new URL(normalized);
+        if (!isSupabaseHostname(hostname)) {
+            return false;
+        }
+
+        return /\/functions\/(v1|v[\d]+)\//.test(pathname);
+    } catch (error) {
+        return false;
+    }
+};
+
+const mergeHeaders = (baseHeaders = {}, overrideHeaders = {}) => {
+    const normalizedEntries = (headers) => {
+        if (!headers) {
+            return [];
+        }
+
+        if (isHeadersInstance(headers)) {
+            return Array.from(headers.entries());
+        }
+
+        if (Array.isArray(headers)) {
+            return headers.filter((entry) => Array.isArray(entry) && entry[0]);
+        }
+
+        if (typeof headers === 'object') {
+            return Object.entries(headers);
+        }
+
+        return [];
+    };
+
+    const map = new Map();
+
+    normalizedEntries(baseHeaders).forEach(([key, value]) => {
+        map.set(key, value);
+    });
+
+    normalizedEntries(overrideHeaders).forEach(([key, value]) => {
+        map.set(key, value);
+    });
+
+    return Object.fromEntries(map.entries());
+};
+
+export const getBackendAuthHeaders = (backendUrl) => {
+    if (!backendUrl) {
+        return {};
+    }
+
+    if (!SUPABASE_ANON_KEY) {
+        return {};
+    }
+
+    if (!isSupabaseEdgeFunctionUrl(backendUrl)) {
+        return {};
+    }
+
+    return {
+        // Supabase Edge Functions require an Authorization header and an apikey header.
+        // https://supabase.com/docs/guides/functions#invoking-edge-functions
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        apikey: SUPABASE_ANON_KEY,
+    };
+};
+
+export const withBackendAuthHeaders = (backendUrl, headers = {}) => {
+    const authHeaders = getBackendAuthHeaders(backendUrl);
+    if (!authHeaders || Object.keys(authHeaders).length === 0) {
+        if (isHeadersInstance(headers)) {
+            return new Headers(headers);
+        }
+
+        if (Array.isArray(headers)) {
+            return headers.slice();
+        }
+
+        if (headers && typeof headers === 'object') {
+            return { ...headers };
+        }
+
+        return {};
+    }
+
+    if (isHeadersInstance(headers)) {
+        const merged = new Headers(authHeaders);
+        headers.forEach((value, key) => {
+            merged.set(key, value);
+        });
+        return merged;
+    }
+
+    if (Array.isArray(headers)) {
+        return Object.entries(mergeHeaders(authHeaders, Object.fromEntries(headers)));
+    }
+
+    if (headers && typeof headers === 'object') {
+        return mergeHeaders(authHeaders, headers);
+    }
+
+    return { ...authHeaders };
+};
+
+export const hasSupabaseAnonKeyConfigured = () => Boolean(SUPABASE_ANON_KEY);
+
+export const getSupabaseAuthHelpMessage = () => SUPABASE_AUTH_HELP_MESSAGE;
+
+export const ensureBackendAuthConfigured = (backendUrl) => {
+    if (isSupabaseEdgeFunctionUrl(backendUrl) && !hasSupabaseAnonKeyConfigured()) {
+        throw new Error(SUPABASE_AUTH_HELP_MESSAGE);
+    }
 };

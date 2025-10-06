@@ -154,6 +154,10 @@ module.exports = {
       'process.env.ZOOM_SDK_KEY': JSON.stringify(process.env.ZOOM_SDK_KEY),
       'process.env.ZOOM_SDK_SECRET': JSON.stringify(process.env.ZOOM_SDK_SECRET),
       'process.env.BACKEND_BASE_URL': JSON.stringify(process.env.BACKEND_BASE_URL || process.env.TOKEN_SERVER_URL || ''),
+      'process.env.SUPABASE_FUNCTION_ANON_KEY': JSON.stringify(
+        process.env.SUPABASE_FUNCTION_ANON_KEY || process.env.SUPABASE_ANON_KEY || ''
+      ),
+      'process.env.SUPABASE_ANON_KEY': JSON.stringify(process.env.SUPABASE_ANON_KEY || ''),
       'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV || 'development'),
     }),
     new webpack.NormalModuleReplacementPlugin(

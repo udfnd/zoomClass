@@ -1,5 +1,10 @@
 // src/ReservationModal.jsx
 import React, { useState } from 'react';
+import {
+    ensureBackendAuthConfigured,
+    normalizeBackendUrl,
+    withBackendAuthHeaders,
+} from './utils/backend';
 
 function ReservationModal({ backendUrl, isOpen, onClose, onReservationCreated }) {
     const [sessionName, setSessionName] = useState('');
@@ -21,6 +26,19 @@ function ReservationModal({ backendUrl, isOpen, onClose, onReservationCreated })
             return;
         }
 
+        const sanitizedBase = normalizeBackendUrl(backendUrl);
+        if (!sanitizedBase) {
+            alert('백엔드 URL이 유효하지 않습니다. 다시 확인해주세요.');
+            return;
+        }
+
+        try {
+            ensureBackendAuthConfigured(sanitizedBase);
+        } catch (authError) {
+            alert(authError.message);
+            return;
+        }
+
         const scheduledDate = new Date(`${date}T${time}`);
         if (Number.isNaN(scheduledDate.getTime())) {
             alert('유효한 날짜와 시간을 입력해주세요.');
@@ -29,10 +47,9 @@ function ReservationModal({ backendUrl, isOpen, onClose, onReservationCreated })
 
         setIsSubmitting(true);
         try {
-            const sanitizedBase = backendUrl.replace(/\/$/, '');
             const response = await fetch(`${sanitizedBase}/meetings`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: withBackendAuthHeaders(sanitizedBase, { 'Content-Type': 'application/json' }),
                 body: JSON.stringify({
                     sessionName: sessionName.trim(),
                     hostName: userName.trim() || `ReservedUser-${Math.floor(Math.random() * 1000)}`,

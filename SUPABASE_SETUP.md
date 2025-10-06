@@ -58,6 +58,11 @@ npm run token-server
 ZOOM_SDK_KEY=your_zoom_sdk_key
 ZOOM_SDK_SECRET=your_zoom_sdk_secret
 BACKEND_BASE_URL=http://localhost:4000
+SUPABASE_FUNCTION_ANON_KEY=your_supabase_anon_key
 ```
+
+`SUPABASE_FUNCTION_ANON_KEY`에는 Supabase 프로젝트의 anon public 키를 입력하세요. Edge Function을 호출할 때는 Supabase에서
+요구하는 대로 `Authorization: Bearer <anon key>`와 `apikey` 헤더가 필요합니다. [Supabase Functions 공식 문서](https://supabase.com/docs/guides/functions#invoking-edge-functions)
+에 따르면 anon 키는 클라이언트에서 사용 가능한 공개 키입니다.
 
 이제 애플리케이션에서 회의 생성, 참여, 화면 공유, 캘린더 조회 기능을 사용할 수 있습니다.
