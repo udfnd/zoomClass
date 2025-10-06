@@ -1,4 +1,4 @@
-const DEFAULT_BACKEND_FALLBACK = 'http://localhost:4000';
+const DEFAULT_BACKEND_FALLBACK = '';
 
 const ensureHttpProtocol = (value) => {
   if (!value) {
