@@ -551,14 +551,58 @@ const extractZakFromZoomUrl = (url) => {
     return '';
 };
 
-const createZoomMeeting = async ({ topic, hostName }) => {
+const stripMilliseconds = (isoString) => {
+    if (typeof isoString !== 'string') {
+        return '';
+    }
+    return isoString.replace(/\.\d{3}Z$/, 'Z');
+};
+
+const normalizeDateInput = (value) => {
+    if (!value) {
+        return null;
+    }
+
+    if (value instanceof Date) {
+        const time = value.getTime();
+        return Number.isNaN(time) ? null : value;
+    }
+
+    if (typeof value === 'number') {
+        const dateFromNumber = new Date(value);
+        return Number.isNaN(dateFromNumber.getTime()) ? null : dateFromNumber;
+    }
+
+    if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (!trimmed) {
+            return null;
+        }
+
+        const parsed = new Date(trimmed);
+        if (!Number.isNaN(parsed.getTime())) {
+            return parsed;
+        }
+
+        const isoLike = trimmed.replace(/ /g, 'T');
+        const reparsed = new Date(isoLike);
+        return Number.isNaN(reparsed.getTime()) ? null : reparsed;
+    }
+
+    return null;
+};
+
+const createZoomMeeting = async ({ topic, hostName, startTime, durationMinutes }) => {
     ensureZoomApiAccessConfigured();
 
     let authInfo = await getZoomApiAuthInfo();
 
+    const normalizedStart = normalizeDateInput(startTime);
+    const sanitizedDuration = Number.isFinite(durationMinutes) ? Math.max(1, Math.round(durationMinutes)) : undefined;
+
     const payload = {
         topic: topic || 'ZoomClass Session',
-        type: 1,
+        type: normalizedStart ? 2 : 1,
         agenda: hostName ? `Host: ${hostName}` : undefined,
         settings: {
             host_video: true,
@@ -567,6 +611,14 @@ const createZoomMeeting = async ({ topic, hostName }) => {
             waiting_room: false,
         },
     };
+
+    if (normalizedStart) {
+        payload.start_time = stripMilliseconds(normalizedStart.toISOString());
+        payload.timezone = 'UTC';
+        if (sanitizedDuration) {
+            payload.duration = sanitizedDuration;
+        }
+    }
 
     const buildErrorMessage = async (response) => {
         const bodyText = await response.text();
@@ -651,6 +703,122 @@ const createZoomMeeting = async ({ topic, hostName }) => {
         zakSource,
         hostProfile,
     };
+};
+
+const persistSupabaseMeeting = async ({
+    sessionName,
+    hostName,
+    startTime,
+    zoomMeetingId,
+    zoomJoinUrl,
+    zoomStartUrl,
+    zoomPasscode,
+}) => {
+    if (!supabaseRestUrl || !supabaseServiceRoleKey) {
+        return { success: false, reason: 'not_configured' };
+    }
+
+    const normalizedSession = (sessionName || '').toString().trim();
+    const normalizedHost = (hostName || '').toString().trim();
+    const normalizedStartDate = normalizeDateInput(startTime);
+
+    if (!normalizedSession || !normalizedHost || !normalizedStartDate) {
+        return { success: false, reason: 'invalid_input' };
+    }
+
+    const basePayload = {
+        session_name: normalizedSession,
+        host_name: normalizedHost,
+        start_time: normalizedStartDate.toISOString(),
+    };
+
+    const optionalFields = {};
+    if (zoomMeetingId) {
+        optionalFields.zoom_meeting_id = `${zoomMeetingId}`;
+    }
+    if (zoomJoinUrl) {
+        optionalFields.zoom_join_url = zoomJoinUrl;
+    }
+    if (zoomStartUrl) {
+        optionalFields.zoom_start_url = zoomStartUrl;
+    }
+    if (zoomPasscode) {
+        optionalFields.zoom_passcode = zoomPasscode;
+    }
+
+    const payloadWithOptionalFields = { ...basePayload, ...optionalFields };
+
+    const attemptSupabaseInsert = async (path, body) =>
+        supabaseRequest(path, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Prefer: 'return=representation',
+            },
+            body: JSON.stringify([body]),
+        });
+
+    const parseSupabaseResponse = async (response) => {
+        const data = await response.json();
+        if (Array.isArray(data)) {
+            return data[0] || null;
+        }
+        if (data && typeof data === 'object') {
+            return data;
+        }
+        return null;
+    };
+
+    const attempts = [
+        { path: 'meetings?on_conflict=session_name,start_time', body: payloadWithOptionalFields, allowFallback: true },
+        { path: 'meetings', body: payloadWithOptionalFields, allowFallback: true },
+    ];
+
+    for (const attempt of attempts) {
+        try {
+            const response = await attemptSupabaseInsert(attempt.path, attempt.body);
+            return { success: true, meeting: await parseSupabaseResponse(response) };
+        } catch (error) {
+            const message = error?.message || '';
+            const columnMissing = /column .* of relation .* does not exist/i.test(message);
+            const conflictNotSupported = /on_conflict/i.test(message);
+
+            if (columnMissing && Object.keys(optionalFields).length > 0) {
+                console.warn('[backend] Supabase meetings table missing optional columns. Retrying with base payload.');
+                try {
+                    const fallbackResponse = await attemptSupabaseInsert(attempt.path, basePayload);
+                    return {
+                        success: true,
+                        meeting: await parseSupabaseResponse(fallbackResponse),
+                        warning: 'missing_optional_columns',
+                    };
+                } catch (fallbackError) {
+                    const fallbackMessage = fallbackError?.message || '';
+                    const fallbackConflict = /on_conflict/i.test(fallbackMessage);
+                    if (fallbackConflict) {
+                        continue;
+                    }
+                    if (!attempt.allowFallback) {
+                        throw fallbackError;
+                    }
+                    console.error('[backend] Failed to persist meeting after column fallback:', fallbackError);
+                    return { success: false, reason: 'storage_failed', error: fallbackError };
+                }
+            }
+
+            if (conflictNotSupported) {
+                continue;
+            }
+
+            if (!attempt.allowFallback) {
+                return { success: false, reason: 'storage_failed', error };
+            }
+
+            console.warn('[backend] Failed to persist meeting to Supabase:', error);
+        }
+    }
+
+    return { success: false, reason: 'storage_failed' };
 };
 
 const buildJoinHelperUrl = (req, { meetingNumber, passcode, topic, hostName, backendBase }) => {
@@ -846,10 +1014,12 @@ app.get('/join', (req, res) => {
 });
 
 app.post('/meeting/create', async (req, res) => {
-    const { topic: rawTopic, hostName: rawHostName } = req.body || {};
+    const { topic: rawTopic, hostName: rawHostName, startTime: rawStartTime, durationMinutes: rawDuration } = req.body || {};
 
     const topic = typeof rawTopic === 'string' ? rawTopic.trim() : '';
     const hostName = typeof rawHostName === 'string' ? rawHostName.trim() : '';
+    const requestedStartDate = normalizeDateInput(rawStartTime);
+    const requestedDuration = Number.isFinite(Number(rawDuration)) ? Number(rawDuration) : undefined;
 
     if (!topic || !hostName) {
         return res.status(400).json({ error: 'topic and hostName are required.' });
@@ -886,6 +1056,8 @@ app.post('/meeting/create', async (req, res) => {
             const { meeting: createdMeeting, zak, zakExpiresIn, zakSource: source, hostProfile } = await createZoomMeeting({
                 topic,
                 hostName,
+                startTime: requestedStartDate || undefined,
+                durationMinutes: requestedDuration,
             });
             meeting = createdMeeting;
             meetingNumber = `${createdMeeting.id}`;
@@ -937,27 +1109,34 @@ app.post('/meeting/create', async (req, res) => {
         });
 
         if (supabaseRestUrl && supabaseServiceRoleKey) {
-            try {
-                await supabaseRequest('meetings', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        Prefer: 'return=representation',
-                    },
-                    body: JSON.stringify([
-                        {
-                            session_name: topic,
-                            host_name: hostName,
-                            start_time: new Date().toISOString(),
-                        },
-                    ]),
-                });
-            } catch (storeError) {
-                console.warn('[backend] Failed to store meeting in Supabase:', storeError);
+            const desiredStartTime = normalizeDateInput(meeting?.start_time) || requestedStartDate || new Date();
+
+            const storageResult = await persistSupabaseMeeting({
+                sessionName: topic,
+                hostName,
+                startTime: desiredStartTime,
+                zoomMeetingId: meetingNumber,
+                zoomJoinUrl: joinUrl,
+                zoomStartUrl: startUrl,
+                zoomPasscode: passcode,
+            });
+
+            if (!storageResult.success) {
+                console.warn('[backend] Failed to store meeting in Supabase:', storageResult.error || storageResult.reason);
                 warnings.push({
                     type: 'supabase_storage',
                     message: 'Failed to record meeting in Supabase. Check backend configuration.',
-                    details: storeError.message,
+                    details:
+                        storageResult.error?.message ||
+                        (storageResult.reason === 'invalid_input'
+                            ? 'Invalid meeting payload provided to Supabase.'
+                            : 'Unknown error while storing meeting.'),
+                });
+            } else if (storageResult.warning === 'missing_optional_columns') {
+                warnings.push({
+                    type: 'supabase_storage_columns',
+                    message: 'Supabase meetings table is missing optional columns for Zoom metadata.',
+                    details: 'Run the latest Supabase SQL migration to add metadata columns.',
                 });
             }
         }
@@ -1064,44 +1243,30 @@ app.post('/meetings', async (req, res) => {
         return;
     }
 
-    const { sessionName, hostName, startTime } = req.body || {};
-    if (!sessionName || !hostName || !startTime) {
-        return res.status(400).json({ error: 'sessionName, hostName, and startTime are required.' });
-    }
+    const { sessionName, hostName, startTime, meetingNumber, joinUrl, startUrl, passcode } = req.body || {};
 
-    let startDate;
-    try {
-        startDate = new Date(startTime);
-        if (Number.isNaN(startDate.getTime())) {
-            throw new Error('Invalid date value');
+    const storageResult = await persistSupabaseMeeting({
+        sessionName,
+        hostName,
+        startTime,
+        zoomMeetingId: meetingNumber,
+        zoomJoinUrl: joinUrl,
+        zoomStartUrl: startUrl,
+        zoomPasscode: passcode,
+    });
+
+    if (!storageResult.success) {
+        if (storageResult.reason === 'invalid_input') {
+            return res
+                .status(400)
+                .json({ error: 'sessionName, hostName, and startTime are required and must be valid values.' });
         }
-    } catch (error) {
-        return res.status(400).json({ error: 'startTime must be a valid date string.' });
-    }
 
-    try {
-        const response = await supabaseRequest('meetings', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                Prefer: 'return=representation',
-            },
-            body: JSON.stringify([
-                {
-                    session_name: sessionName,
-                    host_name: hostName,
-                    start_time: startDate.toISOString(),
-                },
-            ]),
-        });
-
-        const data = await response.json();
-        const meeting = Array.isArray(data) ? data[0] : data;
-        return res.status(201).json({ meeting });
-    } catch (error) {
-        console.error('[backend] Failed to store meeting:', error);
+        console.error('[backend] Failed to store meeting:', storageResult.error || storageResult.reason);
         return res.status(500).json({ error: 'Failed to store meeting in Supabase.' });
     }
+
+    return res.status(201).json({ meeting: storageResult.meeting || null });
 });
 
 app.get('/meetings', async (req, res) => {
@@ -1109,18 +1274,24 @@ app.get('/meetings', async (req, res) => {
         return;
     }
 
-    const { date, range } = req.query;
+    const { date, range, limit } = req.query;
     const params = new URLSearchParams({ select: '*', order: 'start_time.asc' });
 
     if (date) {
-        const start = new Date(`${date}T00:00:00`);
-        const end = new Date(start);
-        end.setDate(end.getDate() + 1);
-        params.append('start_time', `gte.${start.toISOString()}`);
-        params.append('start_time', `lt.${end.toISOString()}`);
+        const dayStart = normalizeDateInput(`${date}T00:00:00`);
+        const endOfDay = dayStart ? new Date(dayStart.getTime()) : null;
+        if (dayStart && endOfDay) {
+            endOfDay.setDate(endOfDay.getDate() + 1);
+            params.append('start_time', `gte.${dayStart.toISOString()}`);
+            params.append('start_time', `lt.${endOfDay.toISOString()}`);
+        }
     } else if (range === 'upcoming') {
         const now = new Date();
         params.append('start_time', `gte.${now.toISOString()}`);
+    }
+
+    if (limit && Number.isFinite(Number(limit)) && Number(limit) > 0) {
+        params.set('limit', Number(limit));
     }
 
     try {
