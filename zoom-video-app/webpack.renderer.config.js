@@ -6,6 +6,76 @@ const CopyWebpackPlugin = require('copy-webpack-plugin');
 const SDK_VERSION = '3.11.0';
 const sdkDistRoot = path.resolve(__dirname, 'node_modules/@zoom/meetingsdk/dist');
 
+const { Compilation, sources } = webpack;
+
+class NormalizeHtmlAssetPathsPlugin {
+  apply(compiler) {
+    const handledCompilations = new WeakSet();
+
+    const rewriteAssets = (compilation) => {
+      handledCompilations.add(compilation);
+
+      const assetNames = Object.keys(compilation.assets || {});
+
+      assetNames
+        .filter((assetName) => assetName.endsWith('.html'))
+        .forEach((assetName) => {
+          const assetDir = path.posix.dirname(assetName);
+          if (!assetDir || assetDir === '.') {
+            return;
+          }
+
+          const asset = compilation.getAsset ? compilation.getAsset(assetName) : null;
+          const rawSource = asset ? asset.source : compilation.assets[assetName];
+          if (!rawSource || typeof rawSource.source !== 'function') {
+            return;
+          }
+
+          const original = rawSource.source().toString();
+
+          const normalized = ['src', 'href'].reduce((contents, attr) => {
+            const pattern = new RegExp(`(${attr}=["'])(?:\\./|\\.\\./)?${assetDir}/`, 'g');
+            return contents.replace(pattern, '$1');
+          }, original);
+
+          if (normalized === original) {
+            return;
+          }
+
+          const updatedSource = new sources.RawSource(normalized);
+
+          if (compilation.updateAsset) {
+            compilation.updateAsset(assetName, updatedSource);
+          } else {
+            compilation.assets[assetName] = updatedSource;
+          }
+        });
+    };
+
+    compiler.hooks.thisCompilation.tap('NormalizeHtmlAssetPathsPlugin', (compilation) => {
+      if (Compilation && compilation.hooks.processAssets) {
+        const stage =
+          Compilation.PROCESS_ASSETS_STAGE_SUMMARIZE ??
+          Compilation.PROCESS_ASSETS_STAGE_OPTIMIZE_INLINE ??
+          Compilation.PROCESS_ASSETS_STAGE_ADDITIONAL;
+
+        compilation.hooks.processAssets.tap(
+          { name: 'NormalizeHtmlAssetPathsPlugin', stage },
+          () => rewriteAssets(compilation),
+        );
+      }
+    });
+
+    compiler.hooks.emit.tap('NormalizeHtmlAssetPathsPlugin', (compilation) => {
+      if (handledCompilations.has(compilation)) {
+        return;
+      }
+
+      rewriteAssets(compilation);
+    });
+  }
+}
+
 require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 
 module.exports = {
@@ -70,9 +140,10 @@ module.exports = {
   },
   output: {
     path: path.resolve(__dirname, '.webpack/renderer'),
-    filename: 'renderer.js',
+    filename: 'index.js',
+    chunkFilename: '[name].js',
     globalObject: 'window',
-    publicPath: './',
+    publicPath: '../',
   },
   plugins: [
     new webpack.ProvidePlugin({
@@ -89,6 +160,7 @@ module.exports = {
         /^events$/, // 'events' 모듈을 정확히 일치시킴
         require.resolve('events/') // 브라우저용 'events' 폴리필로 대체
     ),
+    new NormalizeHtmlAssetPathsPlugin(),
     new CopyWebpackPlugin({
       patterns: [
         {
