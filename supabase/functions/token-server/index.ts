@@ -49,6 +49,39 @@ const ZOOM_CLIENT_SECRET = sanitizeEnvValue("ZOOM_CLIENT_SECRET", env.ZOOM_CLIEN
 const ZOOM_API_KEY = sanitizeEnvValue("ZOOM_API_KEY", env.ZOOM_API_KEY);
 const ZOOM_API_SECRET = sanitizeEnvValue("ZOOM_API_SECRET", env.ZOOM_API_SECRET);
 
+const ALLOWED_ORIGIN = sanitizeEnvValue("CORS_ALLOWED_ORIGIN", env.CORS_ALLOWED_ORIGIN);
+const DEFAULT_CORS_HEADERS: Record<string, string> = {
+  "Access-Control-Allow-Origin": ALLOWED_ORIGIN || "*",
+  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
+
+if (ALLOWED_ORIGIN) {
+  DEFAULT_CORS_HEADERS["Access-Control-Allow-Credentials"] = "true";
+}
+
+function withCorsHeaders(headers: HeadersInit = {}): HeadersInit {
+  let normalized: Record<string, string> = {};
+
+  if (headers instanceof Headers) {
+    normalized = Object.fromEntries(headers.entries());
+  } else if (Array.isArray(headers)) {
+    normalized = headers.reduce<Record<string, string>>((acc, [key, value]) => {
+      if (key) {
+        acc[key] = value;
+      }
+      return acc;
+    }, {});
+  } else if (headers && typeof headers === "object") {
+    normalized = { ...(headers as Record<string, string>) };
+  }
+
+  return {
+    ...DEFAULT_CORS_HEADERS,
+    ...normalized,
+  };
+}
+
 const isZoomOAuthConfigured = () => Boolean(ZOOM_ACCOUNT_ID && ZOOM_CLIENT_ID && ZOOM_CLIENT_SECRET);
 const isZoomJwtConfigured = () => Boolean(ZOOM_API_KEY && ZOOM_API_SECRET);
 const isZoomApiAccessConfigured = () => isZoomOAuthConfigured() || isZoomJwtConfigured();
@@ -702,20 +735,20 @@ async function renderJoinHelper(req: Request, url: URL, basePath: string) {
 
   return new Response(html, {
     status: 200,
-    headers: {
+    headers: withCorsHeaders({
       "Content-Type": "text/html; charset=utf-8",
       "Cache-Control": "no-store",
-    },
+    }),
   });
 }
 
 function jsonResponse(body: JsonRecord, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: {
+    headers: withCorsHeaders({
       "Content-Type": "application/json",
       "Cache-Control": "no-store",
-    },
+    }),
   });
 }
 
@@ -1191,6 +1224,16 @@ Deno.serve(async (req) => {
 
   const { basePath, relativePath } = resolvePathInfo(url);
 
+  if (req.method === "OPTIONS") {
+    const requestHeaders = req.headers.get("access-control-request-headers");
+    const headers = withCorsHeaders(
+      requestHeaders
+        ? { "Access-Control-Allow-Headers": requestHeaders }
+        : undefined,
+    );
+    return new Response(null, { status: 204, headers });
+  }
+
   if (req.method === "GET" && relativePath === "/join") {
     try {
       return await renderJoinHelper(req, url, basePath);
@@ -1221,5 +1264,5 @@ Deno.serve(async (req) => {
     return await handleMeetingCreate(req, url, basePath);
   }
 
-  return new Response("Not found", { status: 404 });
+  return new Response("Not found", { status: 404, headers: withCorsHeaders() });
 });
