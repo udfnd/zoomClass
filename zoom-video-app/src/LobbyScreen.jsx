@@ -1,7 +1,13 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import ReservationModal from './ReservationModal';
 import CalendarView from './CalendarView';
-import { getBackendLabel, normalizeBackendUrl, parseJoinLink } from './utils/backend';
+import {
+    ensureBackendAuthConfigured,
+    getBackendLabel,
+    normalizeBackendUrl,
+    parseJoinLink,
+    withBackendAuthHeaders,
+} from './utils/backend';
 
 function LobbyScreen({
     backendUrl,
@@ -65,8 +71,12 @@ function LobbyScreen({
             throw new Error('Backend URL is not configured.');
         }
 
+        ensureBackendAuthConfigured(sanitizedBackendUrl);
+
         const normalizedEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
-        const response = await fetch(`${sanitizedBackendUrl}${normalizedEndpoint}`);
+        const response = await fetch(`${sanitizedBackendUrl}${normalizedEndpoint}`, {
+            headers: withBackendAuthHeaders(sanitizedBackendUrl),
+        });
         if (!response.ok) {
             const bodyText = await response.text();
             throw new Error(bodyText || response.statusText);
@@ -92,7 +102,8 @@ function LobbyScreen({
             setReservationError('');
         } catch (error) {
             console.error('Failed to load reservations:', error);
-            setReservationError('오늘 예약된 수업을 불러오지 못했습니다.');
+            const message = error instanceof Error ? error.message : String(error);
+            setReservationError(message || '오늘 예약된 수업을 불러오지 못했습니다.');
             setReservations([]);
         }
         setIsLoadingReservations(false);
@@ -134,9 +145,11 @@ function LobbyScreen({
         const resolvedUser = userName.trim() || `User-${Math.floor(Math.random() * 10000)}`;
 
         try {
+            ensureBackendAuthConfigured(sanitizedBackendUrl);
+
             const response = await fetch(`${sanitizedBackendUrl}/meeting/create`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: withBackendAuthHeaders(sanitizedBackendUrl, { 'Content-Type': 'application/json' }),
                 body: JSON.stringify({
                     topic: trimmedSession,
                     hostName: resolvedUser,
@@ -194,7 +207,9 @@ function LobbyScreen({
                 try {
                     const fallbackResponse = await fetch(`${sanitizedBackendUrl}/meeting/signature`, {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
+                        headers: withBackendAuthHeaders(sanitizedBackendUrl, {
+                            'Content-Type': 'application/json',
+                        }),
                         body: JSON.stringify({ meetingNumber, role: 0 }),
                     });
 
@@ -299,9 +314,11 @@ function LobbyScreen({
         const resolvedUser = userName.trim() || `User-${Math.floor(Math.random() * 10000)}`;
 
         try {
+            ensureBackendAuthConfigured(backendForJoin);
+
             const response = await fetch(`${backendForJoin}/meeting/signature`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: withBackendAuthHeaders(backendForJoin, { 'Content-Type': 'application/json' }),
                 body: JSON.stringify({
                     meetingNumber: joinLinkInfo.meetingNumber,
                     role: 0,
