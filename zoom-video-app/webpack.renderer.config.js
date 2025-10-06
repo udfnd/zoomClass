@@ -70,7 +70,8 @@ module.exports = {
   },
   output: {
     path: path.resolve(__dirname, '.webpack/renderer'),
-    filename: 'renderer.js',
+    filename: 'index.js',
+    chunkFilename: '[name].js',
     globalObject: 'window',
     publicPath: './',
   },
