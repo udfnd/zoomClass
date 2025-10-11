@@ -1,4 +1,8 @@
-const DEFAULT_BACKEND_FALLBACK = '';
+const resolveRawBackendEnv = () =>
+  (process.env.BACKEND_BASE_URL ||
+    process.env.TOKEN_SERVER_URL ||
+    process.env.DEFAULT_BACKEND_FALLBACK ||
+    '').trim();
 
 const ensureHttpProtocol = (value) => {
   if (!value) {
@@ -17,7 +21,7 @@ const ensureHttpProtocol = (value) => {
   return trimmed;
 };
 
-const stripTrailingSlashes = (value) => value.replace(/\/+$/, '');
+const stripTrailingSlashes = (value = '') => `${value}`.replace(/\/+$/, '');
 
 const normalizeBackendUrl = (input) => {
   const ensured = ensureHttpProtocol(input);
@@ -47,6 +51,8 @@ const getBackendOrigin = (value) => {
     return '';
   }
 };
+
+const DEFAULT_BACKEND_FALLBACK = normalizeBackendUrl(resolveRawBackendEnv());
 
 module.exports = {
   DEFAULT_BACKEND_FALLBACK,

@@ -1,4 +1,8 @@
 // zoom-video-app/forge.config.js
+const path = require('path');
+
+require('dotenv').config({ path: path.resolve(__dirname, '.env') });
+
 const { FusesPlugin } = require('@electron-forge/plugin-fuses');
 const { FuseV1Options, FuseVersion } = require('@electron/fuses');
 const {
