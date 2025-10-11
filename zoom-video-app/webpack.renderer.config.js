@@ -78,6 +78,9 @@ class NormalizeHtmlAssetPathsPlugin {
 
 require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 
+const rawBackendUrl = process.env.BACKEND_BASE_URL || process.env.TOKEN_SERVER_URL || '';
+const rawTokenServerUrl = process.env.TOKEN_SERVER_URL || '';
+
 module.exports = {
   mode: process.env.NODE_ENV || 'development',
   devtool: process.env.NODE_ENV === 'development' ? 'eval-source-map' : 'source-map',
@@ -153,7 +156,9 @@ module.exports = {
     new webpack.DefinePlugin({
       'process.env.ZOOM_SDK_KEY': JSON.stringify(process.env.ZOOM_SDK_KEY),
       'process.env.ZOOM_SDK_SECRET': JSON.stringify(process.env.ZOOM_SDK_SECRET),
-      'process.env.BACKEND_BASE_URL': JSON.stringify(process.env.BACKEND_BASE_URL || process.env.TOKEN_SERVER_URL || ''),
+      'process.env.BACKEND_BASE_URL': JSON.stringify(rawBackendUrl),
+      'process.env.TOKEN_SERVER_URL': JSON.stringify(rawTokenServerUrl),
+      'process.env.DEFAULT_BACKEND_FALLBACK': JSON.stringify(rawBackendUrl),
       'process.env.SUPABASE_FUNCTION_ANON_KEY': JSON.stringify(
         process.env.SUPABASE_FUNCTION_ANON_KEY || process.env.SUPABASE_ANON_KEY || ''
       ),
