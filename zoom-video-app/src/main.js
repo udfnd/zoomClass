@@ -7,6 +7,7 @@ const {
   normalizeBackendUrl,
   getBackendOrigin,
 } = require('../config/backend-url');
+const { buildZoomSdkHeaderValues } = require('../config/zoom-sdk');
 const { buildConnectSrcValues } = require('../config/connect-src');
 const { buildCspString } = require('../config/csp');
 if (require('electron-squirrel-startup')) {
@@ -94,8 +95,7 @@ const ZOOM_REQUEST_PATTERNS = [
   '*://dmogdx0jrul3u.cloudfront.net/*',
 ];
 
-const ZOOM_ORIGIN = 'https://source.zoom.us';
-const ZOOM_REFERER = `${ZOOM_ORIGIN}/`;
+const { origin: ZOOM_ORIGIN, referer: ZOOM_REFERER } = buildZoomSdkHeaderValues();
 
 const FONT_HOSTS = ['https://fonts.gstatic.com'];
 const STYLE_HOSTS = ['https://fonts.googleapis.com'];
@@ -234,6 +234,8 @@ const installZoomRequestHardening = () => {
   if (!activeSession) {
     return;
   }
+
+  console.info('[zoom-sdk] Enforcing Zoom Meeting SDK headers with origin:', ZOOM_ORIGIN);
 
   activeSession.webRequest.onBeforeSendHeaders(
     { urls: ZOOM_REQUEST_PATTERNS },
